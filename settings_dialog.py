@@ -529,8 +529,20 @@ class SettingsDialog(Gtk.Dialog):
         row = self._row(grid, row, "Default encoding:", self._combo_encoding)
 
         row += 1
+        row = self._section(grid, row, "Integration")
+        self._chk_osc133 = Gtk.CheckButton(label="Enable shell integration (OSC 133)")
+        self._chk_osc133.set_active(self._settings.get("osc133", False))
+        self._chk_osc133.set_tooltip_text(
+            "Enables OSC 133 escape sequences for shell integration (bash/zsh).\n"
+            "When active, TPGK writes a helper script to ~/.config/tpgk/osc133.sh\n"
+            "and sets TPGK_SHELL_INTEGRATION=1. Requires sourcing the script in your\n"
+            "~/.bashrc: [ -f ~/.config/tpgk/osc133.sh ] && source ~/.config/tpgk/osc133.sh"
+        )
+        row = self._row(grid, row, "OSC 133:", self._chk_osc133)
+
+        row += 1
         reset_btn = Gtk.Button(label="Reset Compatibility Options to Defaults")
-        reset_btn.set_tooltip_text("Reset backspace/delete bindings and encoding to their default values")
+        reset_btn.set_tooltip_text("Reset backspace/delete bindings, encoding, and OSC 133 to their default values")
         reset_btn.connect("clicked", lambda *a: self._reset_compatibility())
         grid.attach(reset_btn, 0, row, 2, 1)
         row += 1
@@ -544,6 +556,7 @@ class SettingsDialog(Gtk.Dialog):
         self._combo_backspace.set_active(1)
         self._combo_delete.set_active(1)
         self._combo_encoding.set_active(0)
+        self._chk_osc133.set_active(False)
 
     def _build_ai(self):
         grid = Gtk.Grid()
@@ -673,8 +686,10 @@ class SettingsDialog(Gtk.Dialog):
 
         self._entry_editor = Gtk.Entry()
         self._entry_editor.set_text(self._settings.get("editor_command", "nano"))
-        self._entry_editor.set_tooltip_text("Text editor command used by /onotes. Uses $EDITOR from environment if blank")
-        row = self._row(grid, row, "Editor command:", self._entry_editor)
+        self._entry_editor.set_tooltip_text(
+            "Fallback editor for /onotes, used only if xdg-open is unavailable. "
+            "Normally /onotes opens your system's default app for .md files instead.")
+        row = self._row(grid, row, "Fallback editor:", self._entry_editor)
 
         return grid
 
@@ -747,6 +762,10 @@ class SettingsDialog(Gtk.Dialog):
         s.set("delete_binding", del_map.get(self._combo_delete.get_active(), "escape-sequence"))
         s.set("encoding", self._combo_encoding.get_active_text() or "UTF-8")
 
+        osc133_was_enabled = s.get("osc133", False)
+        osc133_now_enabled = self._chk_osc133.get_active()
+        s.set("osc133", osc133_now_enabled)
+
         new_keys = {}
         new_models = {}
         new_urls = {}
@@ -784,7 +803,58 @@ class SettingsDialog(Gtk.Dialog):
         )
         dialog.run()
         dialog.destroy()
+
+        if osc133_now_enabled and not osc133_was_enabled:
+            _write_osc_setup_script()
+            script_path = os.path.join(
+                os.path.expanduser("~"), ".config", "tpgk", "osc-setup.sh")
+            osc_dialog = Gtk.MessageDialog(
+                self, Gtk.DialogFlags.MODAL, Gtk.MessageType.INFO,
+                Gtk.ButtonsType.OK,
+                "OSC 133 shell integration setup script created:\n\n"
+                f"{script_path}\n\n"
+                "Run this script to add the integration to your\n"
+                "~/.bashrc and ~/.zshrc:\n\n"
+                f"  bash {script_path}\n\n"
+                "After running, restart your shell or run:\n"
+                "  source ~/.bashrc"
+            )
+            osc_dialog.run()
+            osc_dialog.destroy()
+
         self.destroy()
+
+
+def _write_osc_setup_script():
+    script_dir = os.path.join(os.path.expanduser("~"), ".config", "tpgk")
+    script_path = os.path.join(script_dir, "osc-setup.sh")
+    script = r'''#!/bin/bash
+# TPGK OSC 133 Shell Integration Setup
+# Run this script to add OSC 133 integration to your shell config.
+#   bash ~/.config/tpgk/osc-setup.sh
+
+OSC133_LINE='[ -f ~/.config/tpgk/osc133.sh ] && source ~/.config/tpgk/osc133.sh'
+
+for rc in ~/.bashrc ~/.zshrc; do
+    if [ -f "$rc" ]; then
+        if ! grep -qF "osc133.sh" "$rc" 2>/dev/null; then
+            printf '\n# TPGK OSC 133 Shell Integration\n%s\n' "$OSC133_LINE" >> "$rc"
+            echo "Added OSC 133 integration to $rc"
+        else
+            echo "OSC 133 already configured in $rc"
+        fi
+    fi
+done
+
+echo "Done. Restart your shell or run: source ~/.bashrc"
+'''
+    os.makedirs(script_dir, exist_ok=True)
+    try:
+        with open(script_path, "w") as f:
+            f.write(script)
+        os.chmod(script_path, 0o755)
+    except OSError:
+        pass
 
 
 def _hex_to_rgba(hex_color: str) -> Gdk.RGBA:

@@ -1,6 +1,17 @@
 import json
-import requests
 from typing import Generator
+
+# `requests` (and its urllib3/chardet dependency chain) takes ~140ms to import,
+# a large share of app startup. Since AI chat is opt-in, defer it until first use.
+_requests = None
+
+
+def _requests_module():
+    global _requests
+    if _requests is None:
+        import requests
+        _requests = requests
+    return _requests
 
 
 class AIClient:
@@ -82,6 +93,7 @@ class AIClient:
         self._messages = []
 
     def _call_openai_compatible(self) -> str:
+        requests = _requests_module()
         headers = {"Content-Type": "application/json"}
         if self.api_key and self._protocol != "ollama":
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -94,6 +106,7 @@ class AIClient:
         return content
 
     def _call_openai_stream(self) -> Generator[str, None, None]:
+        requests = _requests_module()
         headers = {"Content-Type": "application/json"}
         if self.api_key and self._protocol != "ollama":
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -120,6 +133,7 @@ class AIClient:
         self._messages.append({"role": "assistant", "content": full})
 
     def _call_claude(self) -> str:
+        requests = _requests_module()
         headers = {"x-api-key": self.api_key, "anthropic-version": "2023-06-01",
                    "Content-Type": "application/json"}
         system = ""
@@ -140,6 +154,7 @@ class AIClient:
         return content
 
     def _call_claude_stream(self) -> Generator[str, None, None]:
+        requests = _requests_module()
         headers = {"x-api-key": self.api_key, "anthropic-version": "2023-06-01",
                    "Content-Type": "application/json"}
         system = ""
@@ -189,6 +204,7 @@ class AIClient:
         self._messages.append({"role": "assistant", "content": full})
 
     def _call_gemini(self, message: str) -> str:
+        requests = _requests_module()
         url = self.base_url.replace("{model}", self.model)
         # Use non-streaming endpoint for the non-streaming variant
         url = url.replace(":streamGenerateContent", ":generateContent")
@@ -211,6 +227,7 @@ class AIClient:
         return content
 
     def _call_gemini_stream(self, message: str) -> Generator[str, None, None]:
+        requests = _requests_module()
         # Fix #19: real SSE streaming via streamGenerateContent?alt=sse
         url = self.base_url.replace("{model}", self.model)
         if ":streamGenerateContent" not in url:
@@ -246,6 +263,7 @@ class AIClient:
 
     @staticmethod
     def fetch_models(provider: str, api_key: str = "", base_url: str = ""):
+        requests = _requests_module()
         try:
             if provider == "ollama":
                 url = base_url.replace("/v1/chat/completions", "").rstrip("/") if base_url else "http://localhost:11434"
@@ -282,6 +300,7 @@ class AIClient:
 
     @staticmethod
     def ping_provider(provider: str, url: str) -> bool:
+        requests = _requests_module()
         try:
             if provider == "ollama":
                 u = url.replace("/v1/chat/completions", "").rstrip("/") if url else "http://localhost:11434"

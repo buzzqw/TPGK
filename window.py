@@ -8,7 +8,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Vte", "2.91")
 
-from gi.repository import Gtk, Gdk, GLib
+from gi.repository import Gtk, Gdk, GLib, Vte
 from tpgk.settings import Settings
 from tpgk.terminal import TerminalBox
 from tpgk.settings_dialog import SettingsDialog
@@ -1312,7 +1312,7 @@ class MainWindow(Gtk.ApplicationWindow):
         GLib.idle_add(term._vte.grab_focus)
 
     def _copy_all_to_notes(self, term):
-        text = term._vte.get_text(True, None, None)
+        text = term._vte.get_text_format(Vte.Format.TEXT)
         if text:
             path = term._notes.write_note(text)
             term._vte.feed(

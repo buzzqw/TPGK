@@ -6,7 +6,6 @@ import subprocess
 gi.require_version("Gtk", "3.0")
 gi.require_version("Vte", "2.91")
 gi.require_version("Pango", "1.0")
-
 from gi.repository import Gtk, Gdk, GLib, Pango, Vte
 from tpgk.settings import Settings
 from tpgk.history import HistoryManager
@@ -58,11 +57,27 @@ class TerminalBox(Gtk.Box):
 
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
         scroll.add(self._vte)
         self._scroll = scroll
 
+        self._osc133_margin = Gtk.DrawingArea()
+        self._osc133_margin.set_size_request(6, -1)
+        self._osc133_margin.set_no_show_all(True)
+        self._osc133_margin.set_visible(False)
+        self._osc133_margin.connect("draw", self._draw_osc133_margin)
+
+        vadj = self._scroll.get_vadjustment()
+        if vadj:
+            vadj.connect("value-changed", lambda a: self._osc133_margin.queue_draw())
+            vadj.connect("changed", lambda a: self._osc133_margin.queue_draw())
+
+        term_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        term_box.pack_start(self._osc133_margin, False, False, 0)
+        term_box.pack_start(scroll, True, True, 0)
+
         self._overlay = Gtk.Overlay()
-        self._overlay.add(scroll)
+        self._overlay.add(term_box)
         self.pack_start(self._overlay, True, True, 0)
 
         self._apply_scrollbar_position()
@@ -148,6 +163,14 @@ class TerminalBox(Gtk.Box):
         self._pid = -1
         self._pty_fd = -1
 
+        self._osc133_markers = []
+        self._osc133_rfd = -1
+        self._osc133_fifo_path = ""
+        self._osc133_source_id = 0
+        self._osc133_buf = b""
+        self._osc133_last_exit = 0
+        self._osc133_cmd_start_row = -1
+
         self._settings.connect(self.apply_settings)
 
         self._cmd_bar_visible = False
@@ -172,9 +195,19 @@ class TerminalBox(Gtk.Box):
         fd = Pango.FontDescription(f"{family} {size}")
         self._vte.set_font(fd)
 
+    def _bg_rgba(self):
+        # VTE renders its own background opaque by default regardless of the
+        # window's compositor opacity (it hints itself as an opaque region for
+        # performance), so real "transparent terminal" requires feeding VTE's
+        # own background color a reduced alpha instead.
+        bg = _hex_to_gdk(self._settings.get_bg_color())
+        if self._settings.get("enable_transparency", False):
+            bg.alpha = max(0.0, min(1.0, self._settings.get("opacity", 1.0)))
+        return bg
+
     def _apply_colors(self):
         fg = _hex_to_gdk(self._settings.get_fg_color())
-        bg = _hex_to_gdk(self._settings.get_bg_color())
+        bg = self._bg_rgba()
         self._vte.set_colors(fg, bg, [])
         try:
             cursor_rgba = Gdk.RGBA()
@@ -195,7 +228,7 @@ class TerminalBox(Gtk.Box):
     def _apply_palette(self):
         # Fix #3: pass fg/bg to set_colors so the previous _apply_colors() is not overwritten
         fg = _hex_to_gdk(self._settings.get_fg_color())
-        bg = _hex_to_gdk(self._settings.get_bg_color())
+        bg = self._bg_rgba()
         palette = self._settings.get_palette()
         colors = []
         for key in ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
@@ -288,6 +321,18 @@ class TerminalBox(Gtk.Box):
         if self._settings.get("osc133", False):
             env["TPGK_SHELL_INTEGRATION"] = "1"
             self._write_osc133_script()
+            fifo_path = os.path.join(
+                os.path.expanduser("~"), ".config", "tpgk",
+                f"osc133_{os.getpid()}.fifo")
+            try:
+                os.unlink(fifo_path)
+            except OSError:
+                pass
+            os.mkfifo(fifo_path, 0o600)
+            os.chmod(fifo_path, 0o600)
+            self._osc133_fifo_path = fifo_path
+            env["TPGK_OSC133_FIFO"] = fifo_path
+            self._osc133_rfd = os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)
 
         if cwd:
             wd = cwd
@@ -313,13 +358,34 @@ class TerminalBox(Gtk.Box):
 # Source this in your ~/.bashrc to enable shell integration:
 #   [ -f ~/.config/tpgk/osc133.sh ] && source ~/.config/tpgk/osc133.sh
 
+if [ -n "$TPGK_OSC133_FIFO" ] && [ -p "$TPGK_OSC133_FIFO" ]; then
+    exec 3>>"$TPGK_OSC133_FIFO"
+fi
+
+__TPGK_OSC133_READY=0
+
+__tpgk_osc133_notify() {
+    [ -n "$TPGK_OSC133_FIFO" ] && printf '%s\n' "$1" >&3 2>/dev/null
+    return 0
+}
+
 __tpgk_osc133_preexec() {
+    [ "$__TPGK_OSC133_READY" = "1" ] || return
+    case "$BASH_COMMAND" in
+        __tpgk_osc133_*) return ;;
+        "$PROMPT_COMMAND") return ;;
+    esac
+    __TPGK_OSC133_READY=0
     printf '\033]133;C\007'
+    __tpgk_osc133_notify C
 }
 __tpgk_osc133_precmd() {
     local _exit=$?
+    __TPGK_OSC133_READY=1
     printf '\033]133;D;%s\007' "$_exit"
+    __tpgk_osc133_notify "D$_exit"
     printf '\033]133;A\007'
+    __tpgk_osc133_notify A
     printf '\033]7;%s\007' "file://$PWD"
 }
 
@@ -331,18 +397,26 @@ if [ -n "$BASH_VERSION" ]; then
         PROMPT_COMMAND="__tpgk_osc133_precmd;${PROMPT_COMMAND}"
     fi
     printf '\033]133;A\007'
+    __tpgk_osc133_notify A
     printf '\033]7;%s\007' "file://$PWD"
 elif [ -n "$ZSH_VERSION" ]; then
     autoload -Uz add-zsh-hook
-    __tpgk_zsh_preexec() { printf '\033]133;C\007'; }
-    __tpgk_zsh_precmd() { 
-        printf '\033]133;D;%s\007' "$?"
+    __tpgk_zsh_preexec() {
+        printf '\033]133;C\007'
+        __tpgk_osc133_notify C
+    }
+    __tpgk_zsh_precmd() {
+        local _exit=$?
+        printf '\033]133;D;%s\007' "$_exit"
+        __tpgk_osc133_notify "D$_exit"
         printf '\033]133;A\007'
+        __tpgk_osc133_notify A
         printf '\033]7;%s\007' "file://$PWD"
     }
     add-zsh-hook preexec __tpgk_zsh_preexec
     add-zsh-hook precmd __tpgk_zsh_precmd
     printf '\033]133;A\007'
+    __tpgk_osc133_notify A
     printf '\033]7;%s\007' "file://$PWD"
 fi
 '''
@@ -364,6 +438,10 @@ fi
                 self._pty_fd = terminal.get_pty().get_fd()
             except Exception:
                 self._pty_fd = -1
+            if getattr(self, '_osc133_rfd', -1) >= 0:
+                self._osc133_source_id = GLib.io_add_watch(
+                    self._osc133_rfd, GLib.IO_IN | GLib.IO_HUP,
+                    self._on_osc133_pipe_data)
 
     def terminate(self):
         if self._pid > 0:
@@ -470,10 +548,194 @@ fi
         if self._settings.get("scroll_on_keystroke", True):
             pass
 
+    def _on_osc133_pipe_data(self, source, condition):
+        try:
+            data = os.read(self._osc133_rfd, 4096)
+        except (OSError, BlockingIOError):
+            data = b""
+        if data:
+            self._osc133_buf += data
+            while b"\n" in self._osc133_buf:
+                line, self._osc133_buf = self._osc133_buf.split(b"\n", 1)
+                self._process_osc133_line(line.decode("utf-8", errors="replace").strip())
+        if condition & GLib.IO_HUP:
+            self._osc133_source_id = 0
+            return False
+        return True
+
+    def _process_osc133_line(self, line):
+        if not line:
+            return
+        # The FIFO notification races ahead of the matching OSC bytes traveling
+        # through the pty into VTE's own parser, so an immediate cursor-position
+        # read lands on the previous line. A short delay lets VTE catch up.
+        def _run():
+            self._osc133_handle_event(line)
+            return False
+        GLib.timeout_add(30, _run)
+
+    def _osc133_handle_event(self, line):
+        if not self._pid or self._pid <= 0:
+            return
+
+        try:
+            col, row = self._vte.get_cursor_position()
+        except Exception:
+            return
+
+        if row <= 0:
+            text = self._vte.get_text_format(Vte.Format.TEXT)
+            if not text:
+                return
+
+        cmd = line[0] if line else ""
+        if cmd == "C":
+            self._osc133_cmd_start_row = row
+            self._osc133_markers.append((row, "cmd_start", 0))
+
+        elif cmd == "D":
+            try:
+                self._osc133_last_exit = int(line[1:])
+            except ValueError:
+                self._osc133_last_exit = 0
+
+        elif cmd == "A":
+            if row > 0:
+                self._osc133_cmd_start_row = -1
+                self._osc133_markers.append((row, "prompt", self._osc133_last_exit))
+                self._update_margin_visibility()
+
+    def _update_margin_visibility(self):
+        if self._osc133_markers:
+            self._osc133_margin.set_visible(True)
+        self._osc133_margin.queue_draw()
+
+    def _draw_osc133_margin(self, widget, cr):
+        width = widget.get_allocated_width()
+        height = widget.get_allocated_height()
+        if width < 2:
+            return
+
+        # Match the terminal background so unmarked rows blend in instead of
+        # showing the widget's default (light-themed) background.
+        bg = _hex_to_gdk(self._settings.get_bg_color())
+        cr.set_source_rgba(bg.red, bg.green, bg.blue, 1.0)
+        cr.rectangle(0, 0, width, height)
+        cr.fill()
+
+        if not self._osc133_markers:
+            return
+
+        vadj = self._scroll.get_vadjustment()
+        if not vadj:
+            return
+        top = vadj.get_value()
+        page = vadj.get_page_size()
+        if page <= 0:
+            return
+
+        char_height = height / page
+
+        for row, mtype, exit_code in self._osc133_markers:
+            if mtype != "prompt":
+                continue
+            rel_row = row - top
+            if rel_row < -1 or rel_row > page:
+                continue
+            y = rel_row * char_height
+            if exit_code == 0:
+                cr.set_source_rgba(0.2, 0.75, 0.2, 0.7)
+            else:
+                cr.set_source_rgba(0.85, 0.25, 0.25, 0.7)
+            cr.rectangle(1, y, width - 2, char_height)
+            cr.fill()
+
+    def _scroll_to_osc133_prompt(self, direction_up):
+        if not self._osc133_markers:
+            return
+
+        try:
+            cur_col, cur_row = self._vte.get_cursor_position()
+        except Exception:
+            cur_row = 0
+            cur_col = 0
+
+        prompts = [(r, e) for r, t, e in self._osc133_markers if t == "prompt"]
+        if not prompts:
+            return
+
+        target = None
+        if direction_up:
+            for r, e in reversed(prompts):
+                if r < cur_row - 1:
+                    target = r
+                    break
+        else:
+            for r, e in prompts:
+                if r > cur_row:
+                    target = r
+                    break
+
+        if target is None:
+            return
+
+        vadj = self._scroll.get_vadjustment()
+        vadj.set_value(target)
+
+    def _get_command_output_range(self):
+        try:
+            cur_col, cur_row = self._vte.get_cursor_position()
+        except Exception:
+            return None, None
+
+        cmd_start = None
+        prompt_end = None
+
+        for row, mtype, exit_code in self._osc133_markers:
+            if mtype == "prompt" and row <= cur_row:
+                prompt_end = row
+            if mtype == "cmd_start" and row <= cur_row:
+                cmd_start = row
+
+        if cmd_start is not None and prompt_end is not None and cmd_start < prompt_end:
+            return cmd_start, prompt_end
+        return None, None
+
+    def _copy_command_output(self):
+        start_row, end_row = self._get_command_output_range()
+        if start_row is None:
+            return
+
+        end_row = min(end_row, start_row + 500)
+
+        text, _ = self._vte.get_text_range_format(
+            Vte.Format.TEXT, start_row, 0, end_row, 0)
+        if text:
+            clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+            clipboard.set_text(text, -1)
+            self._vte.feed(
+                "\r\n\x1b[32m+ Output copied to clipboard\x1b[0m\r\n".encode()
+            )
+            self._vte.feed_child(b'\r')
+
     # ── Callbacks ──────────────────────────────────────────────
 
     def _on_child_exited(self, terminal, status):
         self._pid = -1
+        if self._osc133_source_id > 0:
+            GLib.source_remove(self._osc133_source_id)
+            self._osc133_source_id = 0
+        if self._osc133_rfd >= 0:
+            try:
+                os.close(self._osc133_rfd)
+            except OSError:
+                pass
+            self._osc133_rfd = -1
+        if getattr(self, '_osc133_fifo_path', None):
+            try:
+                os.unlink(self._osc133_fifo_path)
+            except OSError:
+                pass
         try:
             code = os.waitstatus_to_exitcode(status)
         except (AttributeError, ValueError):
@@ -486,7 +748,7 @@ fi
             terminal.copy_clipboard_format(Vte.Format.TEXT)
 
     def _get_visible_text(self, num_lines):
-        text = self._vte.get_text(True, None, None) or ""
+        text = self._vte.get_text_format(Vte.Format.TEXT) or ""
         lines = text.split("\n")
         if len(lines) > num_lines:
             lines = lines[-num_lines:]
@@ -529,7 +791,7 @@ fi
         if tag < 0:
             return None
 
-        full_text = self._vte.get_text(True, None, None) or ""
+        full_text = self._vte.get_text_format(Vte.Format.TEXT) or ""
         lines = full_text.split("\n")
         if row < len(lines):
             line_text = lines[row]
@@ -587,6 +849,14 @@ fi
         if has_sel:
             add_note_item.connect("activate", lambda _: self._add_selection_to_note())
         menu.append(add_note_item)
+
+        if self._osc133_markers:
+            menu.append(Gtk.SeparatorMenuItem())
+            copy_out_item = Gtk.MenuItem(label="Copy Command Output")
+            copy_out_item.set_tooltip_text(
+                "Copy the output of the last command to the clipboard")
+            copy_out_item.connect("activate", lambda _: self._copy_command_output())
+            menu.append(copy_out_item)
 
         menu.append(Gtk.SeparatorMenuItem())
 
@@ -670,6 +940,12 @@ fi
                 return True
             if key == Gdk.KEY_D or key == Gdk.KEY_d:
                 self._window.split_signal("horizontal")
+                return True
+            if key == Gdk.KEY_Up:
+                self._scroll_to_osc133_prompt(direction_up=True)
+                return True
+            if key == Gdk.KEY_Down:
+                self._scroll_to_osc133_prompt(direction_up=False)
                 return True
 
         if ctrl and not shift:

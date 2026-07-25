@@ -158,24 +158,32 @@ Compatibility, AI, Notes):
 - 16-color palette with presets
 - AI provider keys, models, URLs, system prompts
 - Shell command, login shell, encoding
+- OSC 133 shell integration (bash/zsh)
 - Notes directory, file, editor
 
 ---
 
 ## Shell Integration (OSC 133)
 
-TPGK can generate a shell integration script at `~/.config/tpgk/osc133.sh` that
-tracks prompts, commands, and exit codes for perfect command boundaries.
+TPGK supports shell integration via OSC 133 sequences to track
+prompts, commands, and exit codes.
 
-1. Enable the setting: `"osc133": true` in `~/.config/tpgk/settings.json`
-   (or via the Preferences dialog, once the UI toggle is added).
-2. Restart TPGK — the script is auto-generated at startup.
-3. Add this line to your `~/.bashrc`:
-```bash
-[ -f ~/.config/tpgk/osc133.sh ] && source ~/.config/tpgk/osc133.sh
-```
+### Features
+- **`Ctrl+Shift+Up/Down`** — jump between prompts in the scrollback buffer
+- **Right-click > Copy Command Output** — copy the output of the last command
+- **Visual margin markers** — green bar (success) or red bar (failure) at every prompt
+- **Exit code tracking** — exit codes shown via margin markers and available for scripting
 
-The script supports both **bash** and **zsh**.
+### Activation
+
+1. Enable in **Preferences > Compatibility > OSC 133**.
+2. A setup script `osc-setup.sh` is created in `~/.config/tpgk/`. Run it:
+   ```bash
+   bash ~/.config/tpgk/osc-setup.sh
+   ```
+3. Restart TPGK — the integration script `osc133.sh` is auto-generated at startup.
+
+The integration supports both **bash** and **zsh**.
 
 ---
 
@@ -187,6 +195,22 @@ The script supports both **bash** and **zsh**.
 - **PyGObject** (`python-gobject`)
 - **requests** (for AI clients)
 - **Linux** with X11 or Wayland
+
+---
+
+## Performance
+
+Measured on a typical Linux desktop (average of 3 cold-launch runs, process
+start to window mapped):
+
+| Metric | Value |
+|---|---|
+| Startup time | ~0.7s |
+| Idle memory (RSS) | ~84 MB |
+
+The `requests` library — only needed for AI chat — is imported lazily on
+first use instead of at startup. This trims ~125ms off startup time and
+~20MB off idle memory versus importing it eagerly.
 
 ---
 

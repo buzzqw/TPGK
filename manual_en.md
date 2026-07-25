@@ -348,6 +348,7 @@ the features of the main window.
 | `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` | Move Tab Left / Right |
 | `Ctrl+Alt+PageUp` | Previous Pane (split mode) |
 | `Alt+1..9` | Replay history command |
+| `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Jump to previous / next prompt (OSC 133) |
 | `Ctrl+Click` URL | Open URL in browser |
 | `Tab` (after `/`) | Autocomplete TPGK command |
 | `/` (start of line) | Open command palette |
@@ -393,6 +394,7 @@ Changing font, colors, scheme, or terminal size takes effect instantly.
 ### Compatibility
 - **Backspace and Delete key behavior**: Auto-detect, ASCII DEL (127), Escape sequence, Control-H (8)
 - Default encoding (13 options: UTF-8, ISO-8859-1, ISO-8859-15, UTF-16, UTF-16BE, UTF-16LE, CP1252, CP850, ASCII, KOI8-R, Shift_JIS, EUC-JP, GBK)
+- **OSC 133 shell integration** toggle (enables prompt/command/exit-code tracking for bash/zsh)
 
 ### AI
 - API key and model for OpenAI, Claude, Gemini, DeepSeek
@@ -443,17 +445,29 @@ UTF-16, UTF-16BE, UTF-16LE, CP1252, CP850, ASCII, KOI8-R, Shift_JIS, EUC-JP, GBK
 **New:** TPGK supports shell integration via OSC 133 sequences to track
 prompts, commands, and exit codes without `/proc` hacking.
 
+### Features
+
+- **Ctrl+Shift+Up/Down**: jump between prompts in the scrollback buffer
+- **Right-click > Copy Command Output**: copy the output of the last command
+- **Visual margin markers**: a green bar appears next to each prompt after a
+  successful command (exit code 0); a red bar appears after a failed command
+- **Exit code tracking**: exit codes are visible via margin markers and stored
+  internally for future scripting features
+
 ### Activation
 
-Enable in `Preferences > General > OSC 133 Shell Integration` (UI setting
-to be added; for now edit `~/.config/tpgk/settings.json` and set `"osc133": true`).
+Enable in `Preferences > Compatibility > OSC 133`.
 
-**Restart TPGK** — the script `~/.config/tpgk/osc133.sh` is generated
-automatically at startup. Then add this line to your `~/.bashrc`:
+When enabled, a setup script `~/.config/tpgk/osc-setup.sh` is created. Run it
+to add the integration to your shell config:
 
 ```bash
-[ -f ~/.config/tpgk/osc133.sh ] && source ~/.config/tpgk/osc133.sh
+bash ~/.config/tpgk/osc-setup.sh
 ```
+
+**Restart TPGK** — the runtime script `~/.config/tpgk/osc133.sh` is generated
+automatically at startup. After running the setup script, restart your shell
+or run `source ~/.bashrc`.
 
 ### How It Works
 
