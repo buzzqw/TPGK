@@ -28,6 +28,8 @@ class TpgkApp(Gtk.Application):
         css_provider = Gtk.CssProvider()
         css_provider.load_from_data(b"""
             vte-terminal { padding-left: 8px; padding-right: 4px; }
+            .tpgk-menu-row { background: alpha(@theme_fg_color, 0.05); padding: 1px 4px; }
+            .tpgk-menu-row button { padding: 3px 10px; }
             .command-bar-frame { border: 1px solid alpha(currentColor, 0.3); background: alpha(@theme_bg_color, 0.95); }
             .command-bar-frame entry { padding: 6px 10px; font-family: Monospace; }
             .command-bar-frame list row { padding: 2px 10px; }

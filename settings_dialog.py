@@ -9,7 +9,7 @@ class SettingsDialog(Gtk.Dialog):
     def __init__(self, parent=None):
         super().__init__(title="Preferences - TPGK", transient_for=parent,
                          modal=True, destroy_with_parent=True)
-        self.set_default_size(720, 700)
+        self.set_default_size(880, 700)
         self._settings = Settings()
 
         self._palette_btns = {}
@@ -19,15 +19,40 @@ class SettingsDialog(Gtk.Dialog):
         self._highlight_btn = None
         self._highlight_bg_btn = None
 
-        self._notebook = Gtk.Notebook()
-        self.get_content_area().pack_start(self._notebook, True, True, 8)
+        self._stack = Gtk.Stack()
+        self._stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self._stack.set_transition_duration(120)
 
-        self._notebook.append_page(self._build_general(), Gtk.Label(label="General"))
-        self._notebook.append_page(self._build_appearance(), Gtk.Label(label="Appearance"))
-        self._notebook.append_page(self._build_colors(), Gtk.Label(label="Colors"))
-        self._notebook.append_page(self._build_compatibility(), Gtk.Label(label="Compatibility"))
-        self._notebook.append_page(self._build_ai(), Gtk.Label(label="AI"))
-        self._notebook.append_page(self._build_notes(), Gtk.Label(label="Notes"))
+        self._sidebar = Gtk.StackSidebar()
+        self._sidebar.set_stack(self._stack)
+        self._sidebar.set_size_request(160, -1)
+
+        content_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        content_box.pack_start(self._sidebar, False, False, 0)
+        content_box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 0)
+        content_box.pack_start(self._stack, True, True, 0)
+        self.get_content_area().pack_start(content_box, True, True, 8)
+
+        self._stack.add_titled(self._build_general(), "general", "General")
+        self._stack.add_titled(self._build_appearance(), "appearance", "Appearance")
+        self._stack.add_titled(self._build_colors(), "colors", "Colors")
+        self._stack.add_titled(self._build_compatibility(), "compatibility", "Compatibility")
+        self._stack.add_titled(self._build_ai(), "ai", "AI")
+        self._stack.add_titled(self._build_notes(), "notes", "Notes")
+
+        # Slightly larger text/controls throughout the dialog for readability
+        # (users with reduced or age-related farsighted vision benefit most
+        # from the sidebar categories and entry fields being easy to read).
+        readability_css = Gtk.CssProvider()
+        readability_css.load_from_data(b"""
+            stacksidebar row { padding: 8px 10px; }
+            stacksidebar row label { font-size: 1.05em; }
+            entry, spinbutton, combobox button, checkbutton label,
+            radiobutton label { font-size: 1.03em; }
+            entry, spinbutton { padding: 4px 6px; }
+        """)
+        self.get_style_context().add_provider(
+            readability_css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.add_button("Cancel", Gtk.ResponseType.CANCEL)
         ok_btn = self.add_button("OK", Gtk.ResponseType.OK)
@@ -56,6 +81,7 @@ class SettingsDialog(Gtk.Dialog):
         rgba = _hex_to_rgba(hex_color)
         btn = Gtk.ColorButton.new_with_rgba(rgba)
         btn.set_size_request(48, 22)
+        btn.set_halign(Gtk.Align.START)
         btn._hex = hex_color
         btn.connect("color-set", self._on_color_set)
         if tooltip:
@@ -80,8 +106,8 @@ class SettingsDialog(Gtk.Dialog):
         grid.set_margin_end(12)
         grid.set_margin_top(8)
         grid.set_margin_bottom(8)
-        grid.set_row_spacing(6)
-        grid.set_column_spacing(8)
+        grid.set_row_spacing(9)
+        grid.set_column_spacing(12)
         row = 0
 
         row = self._section(grid, row, "Title")
@@ -207,8 +233,8 @@ class SettingsDialog(Gtk.Dialog):
         grid.set_margin_end(12)
         grid.set_margin_top(8)
         grid.set_margin_bottom(8)
-        grid.set_row_spacing(6)
-        grid.set_column_spacing(8)
+        grid.set_row_spacing(9)
+        grid.set_column_spacing(12)
         row = 0
 
         row = self._section(grid, row, "Font")
@@ -257,7 +283,7 @@ class SettingsDialog(Gtk.Dialog):
             "Selection background color – click to change")
 
         color_grid = Gtk.Grid()
-        color_grid.set_column_spacing(8)
+        color_grid.set_column_spacing(12)
         color_grid.set_row_spacing(4)
         color_grid.attach(Gtk.Label(label="Foreground:"), 0, 0, 1, 1)
         color_grid.attach(self._fg_color_btn, 1, 0, 1, 1)
@@ -273,15 +299,15 @@ class SettingsDialog(Gtk.Dialog):
 
         row += 1
         row = self._section(grid, row, "Tab Colors")
-        self._entry_tab_title_color = Gtk.Entry()
-        self._entry_tab_title_color.set_text(self._settings.get("tab_title_color", "#ffffff"))
-        self._entry_tab_title_color.set_tooltip_text("CSS color for inactive tab titles (e.g. #cccccc)")
-        row = self._row(grid, row, "Tab title:", self._entry_tab_title_color)
+        self._tab_title_color_btn = self._make_color_button(
+            self._settings.get("tab_title_color", "#ffffff"),
+            "Color for inactive tab titles – click to change")
+        row = self._row(grid, row, "Tab title:", self._tab_title_color_btn)
 
-        self._entry_tab_active_color = Gtk.Entry()
-        self._entry_tab_active_color.set_text(self._settings.get("tab_active_title_color", "#ffffff"))
-        self._entry_tab_active_color.set_tooltip_text("CSS color for the active tab title (e.g. #ffffff)")
-        row = self._row(grid, row, "Active tab:", self._entry_tab_active_color)
+        self._tab_active_color_btn = self._make_color_button(
+            self._settings.get("tab_active_title_color", "#ffffff"),
+            "Color for the active tab title – click to change")
+        row = self._row(grid, row, "Active tab:", self._tab_active_color_btn)
 
         row += 1
         row = self._section(grid, row, "Cursor")
@@ -373,7 +399,7 @@ class SettingsDialog(Gtk.Dialog):
 
         palette_grid = Gtk.Grid()
         palette_grid.set_row_spacing(2)
-        palette_grid.set_column_spacing(8)
+        palette_grid.set_column_spacing(12)
 
         for row_idx in range(4):
             for col_idx in range(4):
@@ -470,8 +496,8 @@ class SettingsDialog(Gtk.Dialog):
         grid.set_margin_end(12)
         grid.set_margin_top(8)
         grid.set_margin_bottom(8)
-        grid.set_row_spacing(6)
-        grid.set_column_spacing(8)
+        grid.set_row_spacing(9)
+        grid.set_column_spacing(12)
         row = 0
 
         row = self._section(grid, row, "Keyboard")
@@ -564,8 +590,8 @@ class SettingsDialog(Gtk.Dialog):
         grid.set_margin_end(12)
         grid.set_margin_top(8)
         grid.set_margin_bottom(8)
-        grid.set_row_spacing(6)
-        grid.set_column_spacing(8)
+        grid.set_row_spacing(9)
+        grid.set_column_spacing(12)
 
         keys = self._settings.get("ai_keys", {})
         models = self._settings.get("ai_models", {})
@@ -667,8 +693,8 @@ class SettingsDialog(Gtk.Dialog):
         grid.set_margin_end(12)
         grid.set_margin_top(8)
         grid.set_margin_bottom(8)
-        grid.set_row_spacing(6)
-        grid.set_column_spacing(8)
+        grid.set_row_spacing(9)
+        grid.set_column_spacing(12)
         row = 0
 
         row = self._section(grid, row, "Notes")
@@ -738,8 +764,8 @@ class SettingsDialog(Gtk.Dialog):
         s.set("highlight_color", self._highlight_btn._hex)
         s.set("highlight_bg_color", self._highlight_bg_btn._hex)
 
-        s.set("tab_title_color", self._entry_tab_title_color.get_text())
-        s.set("tab_active_title_color", self._entry_tab_active_color.get_text())
+        s.set("tab_title_color", self._tab_title_color_btn._hex)
+        s.set("tab_active_title_color", self._tab_active_color_btn._hex)
 
         s.set("cursor_shape", self._combo_cursor_shape.get_active_text())
         s.set("cursor_blink", self._chk_cursor_blink.get_active())

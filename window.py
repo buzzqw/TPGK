@@ -12,6 +12,7 @@ from gi.repository import Gtk, Gdk, GLib, Vte
 from tpgk.settings import Settings
 from tpgk.terminal import TerminalBox
 from tpgk.settings_dialog import SettingsDialog
+from tpgk.icons import symbolic_image, split_view_image, icon_button
 
 
 SIGNALS = [
@@ -104,9 +105,10 @@ class _DetachedWindow(Gtk.Window):
         self._accel_group = Gtk.AccelGroup()
         self.add_accel_group(self._accel_group)
 
-        self._build_menu(vbox)
-        self._build_toolbar(vbox)
+        self._build_headerbar(title)
 
+        vbox.pack_start(self._menubar, False, False, 0)
+        vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         vbox.pack_start(terminal, True, True, 0)
 
         self._toolbar.set_visible(self._settings.get("show_toolbar", False))
@@ -128,12 +130,50 @@ class _DetachedWindow(Gtk.Window):
         ch = max(int(font_size * 1.45), 10)
         self.resize(cols * cw + 60, rows * ch + 120)
 
-    def _build_menu(self, vbox):
-        self._menubar = Gtk.MenuBar()
+    def set_title(self, title):
+        super().set_title(title)
+        if getattr(self, "_headerbar", None) is not None:
+            self._headerbar.set_title(title)
+
+    def _build_headerbar(self, title):
+        header = Gtk.HeaderBar()
+        header.set_show_close_button(True)
+        header.set_title(f"TPGK - {title}")
+        self._headerbar = header
+
+        self._toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+
+        new_win_btn = icon_button("window-new-symbolic",
+                                   tooltip="Open a new terminal window (Ctrl+Shift+N)")
+        new_win_btn.connect("clicked", lambda *a: self._on_new_window())
+        self._toolbar.pack_start(new_win_btn, False, False, 0)
+
+        self._toolbar.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 4)
+
+        copy_btn = icon_button("edit-copy-symbolic", tooltip="Copy selected text (Ctrl+Shift+C)")
+        copy_btn.connect("clicked", lambda *a: self._terminal.copy())
+        self._toolbar.pack_start(copy_btn, False, False, 0)
+
+        paste_btn = icon_button("edit-paste-symbolic", tooltip="Paste from clipboard (Ctrl+Shift+V)")
+        paste_btn.connect("clicked", lambda *a: self._terminal.paste())
+        self._toolbar.pack_start(paste_btn, False, False, 0)
+
+        header.pack_start(self._toolbar)
+
+        self._menubar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self._menubar.get_style_context().add_class("tpgk-menu-row")
+        for label, category_menu in self._build_menu():
+            btn = Gtk.MenuButton(label=label)
+            btn.set_relief(Gtk.ReliefStyle.NONE)
+            btn.set_popup(category_menu)
+            self._menubar.pack_start(btn, False, False, 0)
+
+        self.set_titlebar(header)
+
+    def _build_menu(self):
+        menus = []
 
         file_menu = Gtk.Menu()
-        file_item = Gtk.MenuItem(label="File")
-        file_item.set_submenu(file_menu)
 
         self._menu_item(file_menu, "New Window", lambda *a: self._on_new_window(), "<Primary><Shift>N",
                         "Open a new TPGK terminal window")
@@ -147,11 +187,9 @@ class _DetachedWindow(Gtk.Window):
         self._menu_item(file_menu, "Quit", lambda *a: self._on_close(), "<Primary>Q",
                         "Quit – close this window")
 
-        self._menubar.append(file_item)
+        menus.append(("File", file_menu))
 
         edit_menu = Gtk.Menu()
-        edit_item = Gtk.MenuItem(label="Edit")
-        edit_item.set_submenu(edit_menu)
 
         self._menu_item(edit_menu, "Copy", lambda *a: self._terminal.copy(), "<Primary><Shift>C",
                         "Copy selected text to clipboard")
@@ -166,20 +204,18 @@ class _DetachedWindow(Gtk.Window):
         self._menu_item(edit_menu, "Preferences...", lambda *a: self._open_settings(),
                         "Open the TPGK settings dialog")
 
-        self._menubar.append(edit_item)
+        menus.append(("Edit", edit_menu))
 
         view_menu = Gtk.Menu()
-        view_item = Gtk.MenuItem(label="View")
-        view_item.set_submenu(view_menu)
 
         self._show_menubar_action = self._check_menu_item(
-            view_menu, "Always Show Menu Bar", self._on_toggle_show_menubar,
+            view_menu, "Always Show Menus", self._on_toggle_show_menubar,
             self._settings.get("show_menubar", True),
-            "Keep the menu bar always visible (press Alt to toggle)")
+            "Keep the File/Edit/View/... menu buttons always visible in the header bar")
         self._show_toolbar_action = self._check_menu_item(
-            view_menu, "Always Show Toolbar", self._on_toggle_show_toolbar,
+            view_menu, "Always Show Quick Actions", self._on_toggle_show_toolbar,
             self._settings.get("show_toolbar", False),
-            "Always show the main toolbar")
+            "Always show the quick-action buttons in the header bar")
 
         view_menu.append(Gtk.SeparatorMenuItem())
 
@@ -195,11 +231,9 @@ class _DetachedWindow(Gtk.Window):
         self._menu_item(view_menu, "Zoom Reset", lambda *a: self._terminal.zoom_reset(), "<Primary>0",
                         "Reset terminal font size to default")
 
-        self._menubar.append(view_item)
+        menus.append(("View", view_menu))
 
         term_menu = Gtk.Menu()
-        term_item = Gtk.MenuItem(label="Terminal")
-        term_item.set_submenu(term_menu)
 
         self._menu_item(term_menu, "Set Title...", lambda *a: self._set_title_dialog(), "<Primary><Shift>S",
                         "Set a custom title for this window")
@@ -241,42 +275,16 @@ class _DetachedWindow(Gtk.Window):
             term_menu, "Read-Only", self._on_toggle_read_only, False,
             "Toggle read-only mode (blocks keyboard input)")
 
-        self._menubar.append(term_item)
+        menus.append(("Terminal", term_menu))
 
         help_menu = Gtk.Menu()
-        help_item = Gtk.MenuItem(label="Help")
-        help_item.set_submenu(help_menu)
         self._menu_item(help_menu, "About", lambda *a: self._show_about(),
                         "Show information about TPGK")
-        self._menubar.append(help_item)
+        menus.append(("Help", help_menu))
 
-        vbox.pack_start(self._menubar, False, False, 0)
-
-    def _build_toolbar(self, vbox):
-        self._toolbar = Gtk.Toolbar()
-        self._toolbar.set_style(Gtk.ToolbarStyle.ICONS)
-
-        new_win_btn = Gtk.ToolButton.new_from_stock(Gtk.STOCK_NEW)
-        new_win_btn.set_label("New Window")
-        new_win_btn.set_tooltip_text("Open a new terminal window (Ctrl+Shift+N)")
-        new_win_btn.connect("clicked", lambda *a: self._on_new_window())
-        self._toolbar.insert(new_win_btn, -1)
-
-        self._toolbar.insert(Gtk.SeparatorToolItem(), -1)
-
-        copy_btn = Gtk.ToolButton.new_from_stock(Gtk.STOCK_COPY)
-        copy_btn.set_label("Copy")
-        copy_btn.set_tooltip_text("Copy selected text (Ctrl+Shift+C)")
-        copy_btn.connect("clicked", lambda *a: self._terminal.copy())
-        self._toolbar.insert(copy_btn, -1)
-
-        paste_btn = Gtk.ToolButton.new_from_stock(Gtk.STOCK_PASTE)
-        paste_btn.set_label("Paste")
-        paste_btn.set_tooltip_text("Paste from clipboard (Ctrl+Shift+V)")
-        paste_btn.connect("clicked", lambda *a: self._terminal.paste())
-        self._toolbar.insert(paste_btn, -1)
-
-        vbox.pack_start(self._toolbar, False, False, 0)
+        for _, category_menu in menus:
+            category_menu.show_all()
+        return menus
 
     def _menu_item(self, menu, label, callback, accel=None, tooltip=None):
         item = Gtk.MenuItem(label=label)
@@ -468,12 +476,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self._accel_group = Gtk.AccelGroup()
         self.add_accel_group(self._accel_group)
 
-        self._build_toolbar()
-        self._build_menu()
+        self._build_headerbar()
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         vbox.pack_start(self._menubar, False, False, 0)
-        vbox.pack_start(self._toolbar, False, False, 0)
+        vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         vbox.pack_start(self._paned, True, True, 0)
         self.add(vbox)
 
@@ -500,6 +507,11 @@ class MainWindow(Gtk.ApplicationWindow):
         w = cols * cw + 60
         h = rows * ch + 120
         self.resize(w, h)
+
+    def set_title(self, title):
+        super().set_title(title)
+        if getattr(self, "_headerbar", None) is not None:
+            self._headerbar.set_title(title)
 
     def _fix_paned_position(self):
         self._paned.set_position(99999)
@@ -572,11 +584,9 @@ class MainWindow(Gtk.ApplicationWindow):
     # ── Menubar ─────────────────────────────────────────────
 
     def _build_menu(self):
-        self._menubar = Gtk.MenuBar()
+        menus = []
 
         file_menu = Gtk.Menu()
-        file_item = Gtk.MenuItem(label="File")
-        file_item.set_submenu(file_menu)
 
         self._menu_item(file_menu, "New Tab", self._on_new_tab, "<Primary><Shift>T",
                         "Open a new terminal tab in the current window")
@@ -594,11 +604,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self._menu_item(file_menu, "Quit", lambda *a: self._on_close(), "<Primary>Q",
                         "Quit TPGK (close all windows)")
 
-        self._menubar.append(file_item)
+        menus.append(("File", file_menu))
 
         edit_menu = Gtk.Menu()
-        edit_item = Gtk.MenuItem(label="Edit")
-        edit_item.set_submenu(edit_menu)
 
         self._menu_item(edit_menu, "Copy", lambda *a: self._term_copy(), "<Primary><Shift>C",
                         "Copy selected text to clipboard")
@@ -613,11 +621,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self._menu_item(edit_menu, "Preferences...", lambda *a: self._open_settings(),
                         "Open the TPGK settings dialog")
 
-        self._menubar.append(edit_item)
+        menus.append(("Edit", edit_menu))
 
         view_menu = Gtk.Menu()
-        view_item = Gtk.MenuItem(label="View")
-        view_item.set_submenu(view_menu)
 
         self._split_menu = Gtk.Menu()
         split_item = Gtk.MenuItem(label="Split")
@@ -628,10 +634,10 @@ class MainWindow(Gtk.ApplicationWindow):
             "Single terminal panel (no split)")
         self._split_v_act = self._check_menu_item(
             self._split_menu, "Split Vertical", lambda *a: self._set_split("vertical"), False,
-            "Split the window vertically (top/bottom panels)")
+            "Split the window vertically (left/right panels)")
         self._split_h_act = self._check_menu_item(
             self._split_menu, "Split Horizontal", lambda *a: self._set_split("horizontal"), False,
-            "Split the window horizontally (left/right panels)")
+            "Split the window horizontally (top/bottom panels)")
         view_menu.append(split_item)
 
         view_menu.append(Gtk.SeparatorMenuItem())
@@ -641,17 +647,17 @@ class MainWindow(Gtk.ApplicationWindow):
             self._settings.get("show_tabs", True),
             "Show the tab bar even when only one tab is open")
         self._show_menubar_action = self._check_menu_item(
-            view_menu, "Always Show Menu Bar", self._on_toggle_show_menubar,
+            view_menu, "Always Show Menus", self._on_toggle_show_menubar,
             self._settings.get("show_menubar", True),
-            "Keep the menu bar always visible (press Alt to toggle)")
+            "Keep the File/Edit/View/... menu buttons always visible in the header bar")
         self._show_scrollbar_action = self._check_menu_item(
             view_menu, "Always Show Scrollbar", self._on_toggle_show_scrollbar,
             self._settings.get("scrollbar_position", "right") != "disabled",
             "Always show the vertical scrollbar")
         self._show_toolbar_action = self._check_menu_item(
-            view_menu, "Always Show Toolbar", self._on_toggle_show_toolbar,
+            view_menu, "Always Show Quick Actions", self._on_toggle_show_toolbar,
             self._settings.get("show_toolbar", False),
-            "Always show the main toolbar")
+            "Always show the quick-action buttons in the header bar")
 
         view_menu.append(Gtk.SeparatorMenuItem())
 
@@ -667,11 +673,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self._menu_item(view_menu, "Zoom Reset", lambda *a: self._zoom_reset(), "<Primary>0",
                         "Reset terminal font size to default")
 
-        self._menubar.append(view_item)
+        menus.append(("View", view_menu))
 
         term_menu = Gtk.Menu()
-        term_item = Gtk.MenuItem(label="Terminal")
-        term_item.set_submenu(term_menu)
 
         self._menu_item(term_menu, "Set Title...", lambda *a: self._set_title_dialog(), "<Primary><Shift>S",
                         "Set a custom title for the current tab")
@@ -728,19 +732,19 @@ class MainWindow(Gtk.ApplicationWindow):
         self._menu_item(term_menu, "Detach Tab", lambda *a: self._detach_tab(),
                         "Detach the current tab into a separate window with full menu")
 
-        self._menubar.append(term_item)
+        menus.append(("Terminal", term_menu))
 
         self._tabs_menu = Gtk.Menu()
-        tabs_item = Gtk.MenuItem(label="Tabs")
-        tabs_item.set_submenu(self._tabs_menu)
-        self._menubar.append(tabs_item)
+        menus.append(("Tabs", self._tabs_menu))
 
         help_menu = Gtk.Menu()
-        help_item = Gtk.MenuItem(label="Help")
-        help_item.set_submenu(help_menu)
         self._menu_item(help_menu, "About", lambda *a: self._show_about(),
                         "Show information about TPGK")
-        self._menubar.append(help_item)
+        menus.append(("Help", help_menu))
+
+        for _, category_menu in menus:
+            category_menu.show_all()
+        return menus
 
     def _menu_item(self, menu, label, callback, accel=None, tooltip=None):
         item = Gtk.MenuItem(label=label)
@@ -848,53 +852,65 @@ class MainWindow(Gtk.ApplicationWindow):
             page = target.get_nth_page(idx)
             page._vte.grab_focus()
 
-    # ── Toolbar ──────────────────────────────────────────────
+    # ── Header bar ───────────────────────────────────────────
 
-    def _build_toolbar(self):
-        self._toolbar = Gtk.Toolbar()
-        self._toolbar.set_style(Gtk.ToolbarStyle.ICONS)
+    def _build_headerbar(self):
+        header = Gtk.HeaderBar()
+        header.set_show_close_button(True)
+        header.set_title(self.get_title())
+        self._headerbar = header
 
-        new_tab_btn = Gtk.ToolButton.new_from_stock(Gtk.STOCK_ADD)
-        new_tab_btn.set_label("New Tab")
-        new_tab_btn.set_tooltip_text("Open a new terminal tab (Ctrl+Shift+T)")
+        self._toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+
+        new_tab_btn = icon_button("tab-new-symbolic", tooltip="Open a new terminal tab (Ctrl+Shift+T)")
         new_tab_btn.connect("clicked", lambda *a: self._on_new_tab())
-        self._toolbar.insert(new_tab_btn, -1)
+        self._toolbar.pack_start(new_tab_btn, False, False, 0)
 
-        new_win_btn = Gtk.ToolButton.new_from_stock(Gtk.STOCK_NEW)
-        new_win_btn.set_label("New Window")
-        new_win_btn.set_tooltip_text("Open a new terminal window (Ctrl+Shift+N)")
+        new_win_btn = icon_button("window-new-symbolic", tooltip="Open a new terminal window (Ctrl+Shift+N)")
         new_win_btn.connect("clicked", lambda *a: self._on_new_window())
-        self._toolbar.insert(new_win_btn, -1)
+        self._toolbar.pack_start(new_win_btn, False, False, 0)
 
-        self._toolbar.insert(Gtk.SeparatorToolItem(), -1)
+        self._toolbar.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 4)
 
-        split_v_btn = Gtk.ToolButton()
-        split_v_btn.set_label("Split V")
-        split_v_btn.set_tooltip_text("Split vertically (Ctrl+Shift+E)")
+        split_v_btn = icon_button(custom_image=split_view_image(True),
+                                   tooltip="Split vertically – left/right panels (Ctrl+Shift+E)")
         split_v_btn.connect("clicked", lambda *a: self._set_split(
             "single" if self._split_mode == "vertical" else "vertical"))
-        self._toolbar.insert(split_v_btn, -1)
+        self._toolbar.pack_start(split_v_btn, False, False, 0)
 
-        split_h_btn = Gtk.ToolButton()
-        split_h_btn.set_label("Split H")
-        split_h_btn.set_tooltip_text("Split horizontally (Ctrl+Shift+D)")
+        split_h_btn = icon_button(custom_image=split_view_image(False),
+                                   tooltip="Split horizontally – top/bottom panels (Ctrl+Shift+D)")
         split_h_btn.connect("clicked", lambda *a: self._set_split(
             "single" if self._split_mode == "horizontal" else "horizontal"))
-        self._toolbar.insert(split_h_btn, -1)
+        self._toolbar.pack_start(split_h_btn, False, False, 0)
 
-        self._toolbar.insert(Gtk.SeparatorToolItem(), -1)
+        self._toolbar.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 4)
 
-        copy_btn = Gtk.ToolButton.new_from_stock(Gtk.STOCK_COPY)
-        copy_btn.set_label("Copy")
-        copy_btn.set_tooltip_text("Copy selected text (Ctrl+Shift+C)")
+        copy_btn = icon_button("edit-copy-symbolic", tooltip="Copy selected text (Ctrl+Shift+C)")
         copy_btn.connect("clicked", lambda *a: self._term_copy())
-        self._toolbar.insert(copy_btn, -1)
+        self._toolbar.pack_start(copy_btn, False, False, 0)
 
-        paste_btn = Gtk.ToolButton.new_from_stock(Gtk.STOCK_PASTE)
-        paste_btn.set_label("Paste")
-        paste_btn.set_tooltip_text("Paste from clipboard (Ctrl+Shift+V)")
+        paste_btn = icon_button("edit-paste-symbolic", tooltip="Paste from clipboard (Ctrl+Shift+V)")
         paste_btn.connect("clicked", lambda *a: self._term_paste())
-        self._toolbar.insert(paste_btn, -1)
+        self._toolbar.pack_start(paste_btn, False, False, 0)
+
+        header.pack_start(self._toolbar)
+
+        self._menubar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self._menubar.get_style_context().add_class("tpgk-menu-row")
+        for label, category_menu in self._build_menu():
+            btn = Gtk.MenuButton(label=label)
+            btn.set_relief(Gtk.ReliefStyle.NONE)
+            btn.set_popup(category_menu)
+            self._menubar.pack_start(btn, False, False, 0)
+
+        # Pinned in the header bar itself (fixed space, never squeezed by the
+        # tab strip's own scroll arrows) rather than as a GtkNotebook action
+        # widget, which gets cramped/unclickable once tabs overflow and scroll.
+        self._tab_list_btn = self._make_tab_list_button()
+        header.pack_end(self._tab_list_btn)
+
+        self.set_titlebar(header)
 
     # ── Tab management ───────────────────────────────────────
 
@@ -1056,8 +1072,11 @@ class MainWindow(Gtk.ApplicationWindow):
             self.set_title(f"TPGK - {title}")
 
     def _update_tabs_menu(self):
-        for child in self._tabs_menu.get_children():
-            self._tabs_menu.remove(child)
+        self._populate_tab_menu(self._tabs_menu)
+
+    def _populate_tab_menu(self, menu):
+        for child in menu.get_children():
+            menu.remove(child)
 
         idx = 0
         for nb in (self._notebook, self._notebook2):
@@ -1073,15 +1092,35 @@ class MainWindow(Gtk.ApplicationWindow):
                 item.connect("activate", lambda *a, n=nb, p=i: self._jump_to_tab(n, p))
                 if page is cur_page:
                     item.set_sensitive(False)
-                self._tabs_menu.append(item)
+                menu.append(item)
                 item.show()
                 idx += 1
 
         if idx == 0:
             item = Gtk.MenuItem(label="(no tabs)")
             item.set_sensitive(False)
-            self._tabs_menu.append(item)
+            menu.append(item)
             item.show()
+
+    def _make_tab_list_button(self):
+        """Chevron button pinned at the end of a tab strip, so all open tabs
+        stay one click away even once the strip overflows and scrolls.
+
+        Given a left margin and a comfortable minimum size so it never sits
+        flush against GtkNotebook's own scroll arrows (which otherwise makes
+        the two nearly-touching, same-size arrows hard to tell apart and
+        click accurately).
+        """
+        btn = Gtk.MenuButton()
+        btn.set_image(symbolic_image("pan-down-symbolic", 16))
+        btn.set_relief(Gtk.ReliefStyle.NONE)
+        btn.set_size_request(32, 32)
+        btn.set_margin_start(8)
+        btn.set_tooltip_text("Show all open tabs")
+        menu = Gtk.Menu()
+        btn.set_popup(menu)
+        btn.connect("toggled", lambda b: self._populate_tab_menu(menu) if b.get_active() else None)
+        return btn
 
     def _jump_to_tab(self, nb, page_idx):
         nb.set_current_page(page_idx)
