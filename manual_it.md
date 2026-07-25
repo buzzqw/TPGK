@@ -452,7 +452,8 @@ prompt, comandi e codici di uscita senza bisogno di `/proc` hacking.
 Attiva l'opzione in `Preferences > General > OSC 133 Shell Integration` (da implementare
 nella UI, per ora modifica `~/.config/tpgk/settings.json` impostando `"osc133": true`).
 
-Oppure aggiungi al tuo `~/.bashrc`:
+**Riavvia TPGK** — lo script `~/.config/tpgk/osc133.sh` viene generato
+automaticamente all'avvio. Poi aggiungi questa riga al tuo `~/.bashrc`:
 
 ```bash
 [ -f ~/.config/tpgk/osc133.sh ] && source ~/.config/tpgk/osc133.sh

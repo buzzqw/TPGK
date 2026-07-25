@@ -448,7 +448,8 @@ prompts, commands, and exit codes without `/proc` hacking.
 Enable in `Preferences > General > OSC 133 Shell Integration` (UI setting
 to be added; for now edit `~/.config/tpgk/settings.json` and set `"osc133": true`).
 
-Or add to your `~/.bashrc`:
+**Restart TPGK** — the script `~/.config/tpgk/osc133.sh` is generated
+automatically at startup. Then add this line to your `~/.bashrc`:
 
 ```bash
 [ -f ~/.config/tpgk/osc133.sh ] && source ~/.config/tpgk/osc133.sh

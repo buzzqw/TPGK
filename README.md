@@ -164,13 +164,18 @@ Compatibility, AI, Notes):
 
 ## Shell Integration (OSC 133)
 
-Enable in settings (`"osc133": true`) and add to `~/.bashrc`:
+TPGK can generate a shell integration script at `~/.config/tpgk/osc133.sh` that
+tracks prompts, commands, and exit codes for perfect command boundaries.
 
+1. Enable the setting: `"osc133": true` in `~/.config/tpgk/settings.json`
+   (or via the Preferences dialog, once the UI toggle is added).
+2. Restart TPGK — the script is auto-generated at startup.
+3. Add this line to your `~/.bashrc`:
 ```bash
 [ -f ~/.config/tpgk/osc133.sh ] && source ~/.config/tpgk/osc133.sh
 ```
 
-Tracks prompts, commands, and exit codes for perfect command boundaries.
+The script supports both **bash** and **zsh**.
 
 ---
 
