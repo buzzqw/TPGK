@@ -15,7 +15,7 @@ for _d in _glob.glob('/usr/lib/*/girepository-1.0'):
 
 a = Analysis(
     [os.path.join(SPECPATH, '..', '..', '__main__.py')],
-    pathex=[os.path.join(SPECPATH, '..', '..')],
+    pathex=[os.path.join(SPECPATH, '..', '..', '..')],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports + [
