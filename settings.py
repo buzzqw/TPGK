@@ -52,6 +52,7 @@ DEFAULTS = {
     "show_tabs": True,
     "show_menubar": True,
     "show_toolbar": True,
+    "show_stats": False,
     "dynamic_title": "replace",
     "login_shell": True,
     "cursor_blink": True,
@@ -192,6 +193,11 @@ class Settings:
             except Exception:
                 pass
 
+    def _ensure_loaded(self):
+        if self._loaded:
+            return
+        self.load()
+
     def load(self):
         if self._loaded:
             return
@@ -230,6 +236,7 @@ class Settings:
             raise
 
     def get(self, key, default=None):
+        self._ensure_loaded()
         return self._data.get(key, default)
 
     def set(self, key, value):
@@ -244,10 +251,12 @@ class Settings:
         self.save()
 
     def get_color_scheme(self):
+        self._ensure_loaded()
         scheme = self._data.get("color_scheme", "Dark (Default)")
         return COLOR_SCHEMES.get(scheme, COLOR_SCHEMES["Dark (Default)"])
 
     def get_palette(self):
+        self._ensure_loaded()
         custom = self._data.get("custom_palette")
         if custom:
             return custom
@@ -255,12 +264,14 @@ class Settings:
         return COLOR_PALETTES.get(scheme, COLOR_PALETTES["Dark (Default)"])
 
     def get_fg_color(self):
+        self._ensure_loaded()
         explicit = self._data.get("foreground_color", "")
         if explicit:
             return explicit
         return self.get_color_scheme()["foreground"]
 
     def get_bg_color(self):
+        self._ensure_loaded()
         explicit = self._data.get("background_color", "")
         if explicit:
             return explicit

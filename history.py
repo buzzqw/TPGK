@@ -8,8 +8,17 @@ HISTORY_DB = os.path.join(HISTORY_DIR, "history.db")
 
 class HistoryManager:
     TRIM_CHECK_INTERVAL = 50
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
 
     def __init__(self):
+        if self._initialized:
+            return
         os.makedirs(HISTORY_DIR, exist_ok=True)
         self._inserts_since_trim = 0
         self._conn = sqlite3.connect(HISTORY_DB, check_same_thread=False)
@@ -27,6 +36,7 @@ class HistoryManager:
             "CREATE INDEX IF NOT EXISTS idx_commands_ts ON commands(timestamp)"
         )
         self._conn.commit()
+        self._initialized = True
 
     def add(self, command: str, cwd: str = "", exit_code: int = -1):
         ts = datetime.datetime.now().isoformat()
@@ -52,9 +62,15 @@ class HistoryManager:
                 (limit,),
             ).fetchall()
         parts = terms.strip().split()
-        where = " AND ".join(["command LIKE ? ESCAPE '\\'"] * len(parts))
+        base = " AND ".join(["command LIKE ? ESCAPE '\\'"] * len(parts))
+        params = [f"%{self._like_escape(p)}%" for p in parts]
+        if len(parts) == 1:
+            where = f"(({base}) OR (REPLACE(command, ' ', '') LIKE ? ESCAPE '\\'))"
+            params.append(params[0])
+        else:
+            where = f"({base})"
         where += " AND command NOT LIKE '/%' ESCAPE '\\'"
-        params = [f"%{self._like_escape(p)}%" for p in parts] + [limit]
+        params.append(limit)
         return self._conn.execute(
             f"SELECT id, command, cwd, timestamp FROM commands WHERE {where} ORDER BY id DESC LIMIT ?",
             params,

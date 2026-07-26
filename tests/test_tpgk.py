@@ -217,6 +217,7 @@ class TestHistory:
             hm._conn.close()
         except Exception:
             pass
+        HistoryManager._instance = None
 
     def test_add_and_search(self, hm):
         hm.add("git status", "/home/test")

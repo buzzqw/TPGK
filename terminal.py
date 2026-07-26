@@ -162,6 +162,7 @@ class TerminalBox(Gtk.Box):
         self._comando_corrente = ""
         self._pid = -1
         self._pty_fd = -1
+        self._osc133_stats = ""
 
         self._osc133_markers = []
         self._osc133_rfd = -1
@@ -369,6 +370,18 @@ __tpgk_osc133_notify() {
     return 0
 }
 
+__tpgk_osc133_stats() {
+    [ -n "$TPGK_OSC133_FIFO" ] || return 0
+    local load cpu mem_used mem_total disk_used disk_total
+    load=$(cat /proc/loadavg 2>/dev/null)
+    [ -n "$load" ] || return 0
+    mem_used=$(awk '/^MemTotal/{t=$2}/^MemAvailable/{a=$2}END{printf "%d",(t-a)*1024}' /proc/meminfo 2>/dev/null)
+    mem_total=$(awk '/^MemTotal/{printf "%d",$2*1024; exit}' /proc/meminfo 2>/dev/null)
+    disk_used=$(df -B1 / 2>/dev/null | awk 'NR==2{printf "%d",$3}')
+    disk_total=$(df -B1 / 2>/dev/null | awk 'NR==2{printf "%d",$2}')
+    printf 'S%s|%s|%s|%s|%s\n' "$load" "$mem_used" "$mem_total" "$disk_used" "$disk_total" >&3 2>/dev/null
+}
+
 __tpgk_osc133_preexec() {
     [ "$__TPGK_OSC133_READY" = "1" ] || return
     case "$BASH_COMMAND" in
@@ -387,6 +400,7 @@ __tpgk_osc133_precmd() {
     printf '\033]133;A\007'
     __tpgk_osc133_notify A
     printf '\033]7;%s\007' "file://$PWD"
+    __tpgk_osc133_stats
 }
 
 if [ -n "$BASH_VERSION" ]; then
@@ -412,6 +426,7 @@ elif [ -n "$ZSH_VERSION" ]; then
         printf '\033]133;A\007'
         __tpgk_osc133_notify A
         printf '\033]7;%s\007' "file://$PWD"
+        __tpgk_osc133_stats
     }
     add-zsh-hook preexec __tpgk_zsh_preexec
     add-zsh-hook precmd __tpgk_zsh_precmd
@@ -524,6 +539,55 @@ fi
                 pass
         return os.path.expanduser("~")
 
+    def is_ssh(self):
+        if self._pid <= 0:
+            return False
+        try:
+            with open(f"/proc/{self._pid}/environ", "rb") as f:
+                env = f.read()
+            return b"SSH_CONNECTION" in env or b"SSH_TTY" in env or b"SSH_CLIENT" in env
+        except (OSError, PermissionError):
+            return False
+
+    def get_osc133_stats(self):
+        """Return formatted stats from OSC shell integration, or empty string."""
+        raw = self._osc133_stats
+        if not raw:
+            return ""
+        try:
+            parts = raw.split("|")
+            if len(parts) < 5:
+                return ""
+            load = parts[0].split()
+            mem_used = int(parts[1])
+            mem_total = int(parts[2])
+            disk_used = int(parts[3])
+            disk_total = int(parts[4])
+        except (ValueError, IndexError):
+            return ""
+
+        cpu = float(load[0]) * 100 if len(load) >= 1 else 0.0
+        mem_pct = (mem_used / mem_total * 100) if mem_total > 0 else 0
+        disk_pct = (disk_used / disk_total * 100) if disk_total > 0 else 0
+        mem_used_s = self._format_bytes(mem_used)
+        mem_total_s = self._format_bytes(mem_total)
+        disk_used_s = self._format_bytes(disk_used)
+        disk_total_s = self._format_bytes(disk_total)
+
+        return (
+            f"  CPU {cpu:5.1f}%  "
+            f"RAM {mem_used_s}/{mem_total_s} ({mem_pct:.0f}%)  "
+            f"Disk {disk_used_s}/{disk_total_s} ({disk_pct:.0f}%)"
+        )
+
+    @staticmethod
+    def _format_bytes(val: int) -> str:
+        gb = 1024 * 1024 * 1024
+        mb = 1024 * 1024
+        if val >= gb:
+            return f"{val / gb:.1f}G"
+        return f"{val / mb:.0f}M"
+
     # Fix #5: zoom is per-terminal and volatile (does not persist to settings)
     def zoom_in(self):
         self._vte.set_font_scale(self._vte.get_font_scale() * 1.1)
@@ -604,6 +668,9 @@ fi
                 self._osc133_cmd_start_row = -1
                 self._osc133_markers.append((row, "prompt", self._osc133_last_exit))
                 self._update_margin_visibility()
+
+        elif cmd == "S":
+            self._osc133_stats = line[1:]
 
     def _update_margin_visibility(self):
         if self._osc133_markers:
@@ -969,6 +1036,7 @@ fi
             if key == Gdk.KEY_U or key == Gdk.KEY_u:
                 self.feed_command_bytes(b'\x15')
                 self._input_shadow = ""
+                self._exit_history_search_mode()
                 return True
             if key == Gdk.KEY_W or key == Gdk.KEY_w:
                 self.feed_command_bytes(b'\x17')
@@ -984,6 +1052,7 @@ fi
                 self._provider_list = []
                 self._model_list = []
                 self._async_pending = False
+                self._exit_history_search_mode()
                 return True
             if key == Gdk.KEY_plus or key == Gdk.KEY_equal:
                 self.zoom_in()
@@ -1012,6 +1081,7 @@ fi
                 self._ai_input = ""
                 self.feed_command_bytes(b'\x15')
                 self._vte.feed(b'\r\n')
+                self._exit_history_search_mode()
                 return True
             if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
                 question = self._ai_input.strip()
@@ -1055,6 +1125,7 @@ fi
                 self._async_pending = False
                 self._vte.feed(b"\r\n\x1b[37mSelection cancelled.\x1b[0m\r\n")
                 self._input_shadow = ""
+                self._exit_history_search_mode()
                 return True
             if text and text.isdigit():
                 num = int(text)
@@ -1128,8 +1199,9 @@ fi
                     self._start_ai("")
                     self._input_shadow = ""
                     return True
-                elif shadow.startswith("/history") or shadow.startswith("/history "):
-                    self._cmd_history(shadow.split(None, 1)[1] if " " in shadow else "")
+                elif shadow.startswith("/history"):
+                    parts = shadow.split(None, 1)
+                    self._cmd_history(parts[1] if len(parts) > 1 else "")
                     self._input_shadow = ""
                     return True
                 elif shadow.startswith("/wnotes"):
@@ -1355,7 +1427,8 @@ fi
         elif shadow == "/ai":
             self._start_ai("")
         elif shadow.startswith("/history"):
-            self._cmd_history(shadow.split(None, 1)[1] if " " in shadow else "")
+            parts = shadow.split(None, 1)
+            self._cmd_history(parts[1] if len(parts) > 1 else "")
         elif shadow.startswith("/wnotes"):
             args = shadow.split(None, 1)[1] if " " in shadow else ""
             self._cmd_wnotes(args)
@@ -1504,6 +1577,17 @@ fi
 
     # ── History search ────────────────────────────────────────
 
+    def _exit_history_search_mode(self):
+        if self._history_list_display:
+            self._vte.feed(b'\033[?1049l')
+        self._history_search_mode = False
+        self._history_list_display = False
+        self._history_search_query = ""
+        self._history_search_results = []
+        self._history_list_results = []
+        self._history_list_index = 0
+        self._history_list_nlines = 0
+
     def _start_history_search(self):
         self._history_search_mode = True
         self._history_search_query = ""
@@ -1516,30 +1600,21 @@ fi
         text = event.string
 
         if key == Gdk.KEY_Escape:
-            if self._history_list_display:
-                self._vte.feed(b'\033[?1049l')
-            self._history_search_mode = False
-            self._history_list_display = False
-            self._history_search_query = ""
-            self._history_search_results = []
-            self._history_list_results = []
-            self._history_list_index = 0
-            self._history_list_nlines = 0
+            self._exit_history_search_mode()
             self._vte.feed(b'\r\n')
             return
 
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
             if self._history_list_display:
-                self._vte.feed(b'\033[?1049l')
-                self._history_search_mode = False
-                self._history_list_display = False
-                if self._history_list_results and 0 <= self._history_list_index < len(self._history_list_results):
-                    cmd = self._history_list_results[self._history_list_index][1]
+                results = self._history_list_results
+                sel_idx = self._history_list_index
+                self._exit_history_search_mode()
+                if results and 0 <= sel_idx < len(results):
+                    cmd = results[sel_idx][1]
                     self._vte.feed_child((cmd + "\n").encode("utf-8"))
                     self._history.add(cmd, self.get_cwd())
                 else:
                     self._vte.feed(b'\r\n')
-                self._history_search_query = ""
                 self._history_list_results = []
                 self._history_list_index = 0
                 self._history_list_nlines = 0
@@ -1782,6 +1857,7 @@ fi
         self._history_show_results = []
         self._vte.feed(b"\r\n\x1b[37mCancelled.\x1b[0m\r\n")
         self._input_shadow = ""
+        self._exit_history_search_mode()
 
     def _select_provider_number(self, num):
         for n, prov, fetched in self._provider_list:

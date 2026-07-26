@@ -108,6 +108,7 @@ class TestHistoryEdgeCases:
             hm._conn.close()
         except Exception:
             pass
+        HistoryManager._instance = None
 
     def test_search_special_characters(self, hm):
         hm.add("echo 'hello world'", "/home")
@@ -420,6 +421,7 @@ class TestIntegrationDeep:
                 hm._conn.close()
             except Exception:
                 pass
+            HistoryManager._instance = None
 
     def test_history_exit_code_stored(self, tmp_path):
         import tpgk.history as hist
@@ -438,6 +440,84 @@ class TestIntegrationDeep:
                 hm._conn.close()
             except Exception:
                 pass
+            HistoryManager._instance = None
+
+
+# ── System Stats ─────────────────────────────────────────────────
+
+class TestSystemStats:
+
+    def test_mb_bytes_format(self):
+        from tpgk.system_stats import _mb
+        assert "0M" in _mb(0)
+        assert "M" in _mb(1024 * 512)
+        assert "G" in _mb(1024 * 1024 * 1024)
+        assert "G" in _mb(1024 * 1024 * 1024 * 5)
+
+    def test_collect_returns_string(self):
+        from tpgk.system_stats import collect
+        result = collect()
+        assert isinstance(result, str)
+        assert "CPU" in result
+        assert "RAM" in result
+        assert "Disk" in result
+
+    def test_collect_with_ssh(self):
+        from tpgk.system_stats import collect
+        result = collect(is_ssh=True)
+        assert "[SSH]" in result
+
+
+# ── History: space‑insensitive search ────────────────────────────
+
+class TestHistorySpaceInsensitive:
+
+    @pytest.fixture
+    def hm(self, tmp_path):
+        import tpgk.history as hist
+        orig_dir, orig_db = hist.HISTORY_DIR, hist.HISTORY_DB
+        db = tmp_path / "test.db"
+        hist.HISTORY_DIR = str(tmp_path)
+        hist.HISTORY_DB = str(db)
+        hm = HistoryManager()
+        yield hm
+        hist.HISTORY_DIR, hist.HISTORY_DB = orig_dir, orig_db
+        try:
+            hm._conn.close()
+        except Exception:
+            pass
+        HistoryManager._instance = None
+
+    def test_search_ignores_spaces(self, hm):
+        hm.add("ssh debinis@host", "/home")
+        r = hm.search("sshdeb", 10)
+        assert len(r) == 1
+        assert "ssh" in r[0][1]
+
+    def test_search_exact_substring_still_works(self, hm):
+        hm.add("sshdebinis", "/home")
+        r = hm.search("sshdeb", 10)
+        assert len(r) == 1
+
+    def test_search_multi_word_and_logic(self, hm):
+        hm.add("ssh user@host -p 2222", "/home")
+        hm.add("ssh prod", "/home")
+        r = hm.search("ssh 2222", 10)
+        assert len(r) == 1
+
+
+# ── Opacity rounding ─────────────────────────────────────────────
+
+class TestOpacityRounding:
+
+    def test_float_precision_does_not_trigger_opacity(self):
+        raw = 0.9999999999999999
+        assert raw < 1.0
+        assert not (round(raw, 2) < 1.0)
+
+    def test_legit_opacity_still_triggers(self):
+        assert round(0.85, 2) < 1.0
+        assert round(0.3, 2) < 1.0
 
 
 if __name__ == "__main__":

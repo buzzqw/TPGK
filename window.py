@@ -11,8 +11,6 @@ gi.require_version("Vte", "2.91")
 from gi.repository import Gtk, Gdk, GLib, Vte
 from tpgk.settings import Settings
 from tpgk.terminal import TerminalBox
-from tpgk.settings_dialog import SettingsDialog
-from tpgk.icons import symbolic_image, split_view_image, icon_button
 
 
 SIGNALS = [
@@ -99,6 +97,12 @@ class _DetachedWindow(Gtk.Window):
         self._terminal = terminal
         self._apply_window_size()
 
+        self._stats_label = Gtk.Label()
+        self._stats_label.set_halign(Gtk.Align.START)
+        self._stats_label.get_style_context().add_class("tpgk-stats-label")
+        self._stats_label.set_no_show_all(True)
+        self._stats_source_id = 0
+
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add(vbox)
 
@@ -110,9 +114,11 @@ class _DetachedWindow(Gtk.Window):
         vbox.pack_start(self._menubar, False, False, 0)
         vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         vbox.pack_start(terminal, True, True, 0)
+        vbox.pack_end(self._stats_label, False, False, 0)
 
         self._toolbar.set_visible(self._settings.get("show_toolbar", False))
         self._menubar.set_visible(self._settings.get("show_menubar", True))
+        self._apply_stats_visibility()
 
         self._settings.connect(self._apply_window_size)
 
@@ -120,6 +126,7 @@ class _DetachedWindow(Gtk.Window):
         self.connect("key-press-event", self._on_window_key)
 
         self.show_all()
+        GLib.idle_add(self._populate_menus)
         GLib.idle_add(terminal._vte.grab_focus)
 
     def _apply_window_size(self):
@@ -136,6 +143,8 @@ class _DetachedWindow(Gtk.Window):
             self._headerbar.set_title(title)
 
     def _build_headerbar(self, title):
+        from tpgk.icons import icon_button
+
         header = Gtk.HeaderBar()
         header.set_show_close_button(True)
         header.set_title(f"TPGK - {title}")
@@ -162,11 +171,12 @@ class _DetachedWindow(Gtk.Window):
 
         self._menubar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self._menubar.get_style_context().add_class("tpgk-menu-row")
-        for label, category_menu in self._build_menu():
-            btn = Gtk.MenuButton(label=label)
+        self._menu_buttons = []
+        for lbl in ("File", "Edit", "View", "Terminal", "Help"):
+            btn = Gtk.MenuButton(label=lbl)
             btn.set_relief(Gtk.ReliefStyle.NONE)
-            btn.set_popup(category_menu)
             self._menubar.pack_start(btn, False, False, 0)
+            self._menu_buttons.append(btn)
 
         self.set_titlebar(header)
 
@@ -216,6 +226,10 @@ class _DetachedWindow(Gtk.Window):
             view_menu, "Always Show Quick Actions", self._on_toggle_show_toolbar,
             self._settings.get("show_toolbar", False),
             "Always show the quick-action buttons in the header bar")
+        self._show_stats_action = self._check_menu_item(
+            view_menu, "Show System Stats", self._on_toggle_show_stats,
+            self._settings.get("show_stats", False),
+            "Show CPU, RAM and Disk usage at the bottom of the window")
 
         view_menu.append(Gtk.SeparatorMenuItem())
 
@@ -286,6 +300,13 @@ class _DetachedWindow(Gtk.Window):
             category_menu.show_all()
         return menus
 
+    def _populate_menus(self):
+        menus = self._build_menu()
+        for btn, (label, menu) in zip(self._menu_buttons, menus):
+            btn.set_popup(menu)
+        self._menu_buttons = []
+        return False
+
     def _menu_item(self, menu, label, callback, accel=None, tooltip=None):
         item = Gtk.MenuItem(label=label)
         item.connect("activate", callback)
@@ -309,7 +330,9 @@ class _DetachedWindow(Gtk.Window):
         return item
 
     def _on_new_window(self, *a):
-        subprocess.Popen([sys.executable, "-m", "tpgk"], start_new_session=True)
+        env = os.environ.copy()
+        env["TPGK_RELOAD_MODULES"] = "1"
+        subprocess.Popen([sys.executable, "-m", "tpgk"], env=env, start_new_session=True)
 
     def _open_fm(self, *a):
         fm = _detect_file_manager(self._settings)
@@ -319,6 +342,7 @@ class _DetachedWindow(Gtk.Window):
         subprocess.Popen([fm, cwd], start_new_session=True)
 
     def _open_settings(self, *a):
+        from tpgk.settings_dialog import SettingsDialog
         dialog = SettingsDialog(self)
         dialog.run()
         dialog.destroy()
@@ -330,6 +354,37 @@ class _DetachedWindow(Gtk.Window):
     def _on_toggle_show_toolbar(self, check):
         self._settings.set("show_toolbar", check.get_active())
         self._toolbar.set_visible(check.get_active())
+
+    def _on_toggle_show_stats(self, check):
+        self._settings.set("show_stats", check.get_active())
+        self._apply_stats_visibility()
+
+    def _apply_stats_visibility(self):
+        visible = self._settings.get("show_stats", False)
+        self._stats_label.set_visible(visible)
+        if visible:
+            self._start_stats_timer()
+        else:
+            self._stop_stats_timer()
+
+    def _start_stats_timer(self):
+        if self._stats_source_id:
+            return
+        self._refresh_stats()
+        self._stats_source_id = GLib.timeout_add_seconds(3, self._refresh_stats)
+
+    def _stop_stats_timer(self):
+        if self._stats_source_id:
+            GLib.source_remove(self._stats_source_id)
+            self._stats_source_id = 0
+
+    def _refresh_stats(self):
+        from tpgk.system_stats import collect
+        term = self._terminal if self._terminal else None
+        is_ssh = term.is_ssh() if term else False
+        stats = collect(is_ssh)
+        self._stats_label.set_text(stats)
+        return True
 
     def _toggle_fullscreen(self, *a):
         if self.get_window().get_state() & Gdk.WindowState.FULLSCREEN:
@@ -369,7 +424,7 @@ class _DetachedWindow(Gtk.Window):
     def _show_about(self, *a):
         dialog = Gtk.AboutDialog(transient_for=self, modal=True)
         dialog.set_program_name("TPGK")
-        dialog.set_version("1.0.0")
+        dialog.set_version("1.1.0")
         dialog.set_comments("Advanced terminal emulator powered by VTE")
         dialog.set_copyright("Andres Zanzani")
         dialog.set_license_type(Gtk.License.CUSTOM)
@@ -427,7 +482,6 @@ class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
         self._settings = Settings()
-        self._settings.load()
 
         self.set_title("TPGK Terminal")
         cols = self._settings.get("terminal_columns", 80)
@@ -440,8 +494,9 @@ class MainWindow(Gtk.ApplicationWindow):
         if self._settings.get("enable_transparency", False):
             self.set_app_paintable(True)
             self.set_visual(self.get_screen().get_rgba_visual())
-        if self._settings.get("opacity", 1.0) < 1.0:
-            self.set_opacity(self._settings.get("opacity", 1.0))
+        opacity = round(self._settings.get("opacity", 1.0), 2)
+        if opacity < 1.0:
+            self.set_opacity(opacity)
 
         self._paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self._paned.set_wide_handle(True)
@@ -478,18 +533,27 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._build_headerbar()
 
+        self._stats_label = Gtk.Label()
+        self._stats_label.set_halign(Gtk.Align.START)
+        self._stats_label.get_style_context().add_class("tpgk-stats-label")
+        self._stats_label.set_no_show_all(True)
+        self._stats_source_id = 0
+
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         vbox.pack_start(self._menubar, False, False, 0)
         vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         vbox.pack_start(self._paned, True, True, 0)
+        vbox.pack_end(self._stats_label, False, False, 0)
         self.add(vbox)
 
         self.connect("delete-event", self._on_close)
         self.connect("key-press-event", self._on_window_key)
 
         self.show_all()
+        GLib.idle_add(self._populate_menus)
         self._toolbar.set_visible(self._settings.get("show_toolbar", False))
         self._menubar.set_visible(self._settings.get("show_menubar", True))
+        self._apply_stats_visibility()
 
         self._apply_tab_colors()
 
@@ -658,6 +722,10 @@ class MainWindow(Gtk.ApplicationWindow):
             view_menu, "Always Show Quick Actions", self._on_toggle_show_toolbar,
             self._settings.get("show_toolbar", False),
             "Always show the quick-action buttons in the header bar")
+        self._show_stats_action = self._check_menu_item(
+            view_menu, "Show System Stats", self._on_toggle_show_stats,
+            self._settings.get("show_stats", False),
+            "Show CPU, RAM and Disk usage at the bottom of the window")
 
         view_menu.append(Gtk.SeparatorMenuItem())
 
@@ -745,6 +813,13 @@ class MainWindow(Gtk.ApplicationWindow):
         for _, category_menu in menus:
             category_menu.show_all()
         return menus
+
+    def _populate_menus(self):
+        menus = self._build_menu()
+        for btn, (label, menu) in zip(self._menu_buttons, menus):
+            btn.set_popup(menu)
+        self._menu_buttons = []
+        return False
 
     def _menu_item(self, menu, label, callback, accel=None, tooltip=None):
         item = Gtk.MenuItem(label=label)
@@ -855,6 +930,8 @@ class MainWindow(Gtk.ApplicationWindow):
     # ── Header bar ───────────────────────────────────────────
 
     def _build_headerbar(self):
+        from tpgk.icons import icon_button, split_view_image
+
         header = Gtk.HeaderBar()
         header.set_show_close_button(True)
         header.set_title(self.get_title())
@@ -898,15 +975,13 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._menubar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self._menubar.get_style_context().add_class("tpgk-menu-row")
-        for label, category_menu in self._build_menu():
-            btn = Gtk.MenuButton(label=label)
+        self._menu_buttons = []
+        for lbl in ("File", "Edit", "View", "Terminal", "Tabs", "Help"):
+            btn = Gtk.MenuButton(label=lbl)
             btn.set_relief(Gtk.ReliefStyle.NONE)
-            btn.set_popup(category_menu)
             self._menubar.pack_start(btn, False, False, 0)
+            self._menu_buttons.append(btn)
 
-        # Pinned in the header bar itself (fixed space, never squeezed by the
-        # tab strip's own scroll arrows) rather than as a GtkNotebook action
-        # widget, which gets cramped/unclickable once tabs overflow and scroll.
         self._tab_list_btn = self._make_tab_list_button()
         header.pack_end(self._tab_list_btn)
 
@@ -1112,12 +1187,15 @@ class MainWindow(Gtk.ApplicationWindow):
         click accurately).
         """
         btn = Gtk.MenuButton()
+        from tpgk.icons import symbolic_image
         btn.set_image(symbolic_image("pan-down-symbolic", 16))
         btn.set_relief(Gtk.ReliefStyle.NONE)
         btn.set_size_request(32, 32)
         btn.set_margin_start(8)
         btn.set_tooltip_text("Show all open tabs")
         menu = Gtk.Menu()
+        menu.get_style_context().add_class("tpgk-tab-menu")
+        menu.set_reserve_toggle_size(False)
         btn.set_popup(menu)
         btn.connect("toggled", lambda b: self._populate_tab_menu(menu) if b.get_active() else None)
         return btn
@@ -1143,7 +1221,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self._add_new_tab()
 
     def _on_new_window(self, *a):
-        subprocess.Popen([sys.executable, "-m", "tpgk"], start_new_session=True)
+        env = os.environ.copy()
+        env["TPGK_RELOAD_MODULES"] = "1"
+        subprocess.Popen([sys.executable, "-m", "tpgk"], env=env, start_new_session=True)
 
     def _on_open_fm(self, *a):
         fm = _detect_file_manager(self._settings)
@@ -1179,6 +1259,7 @@ class MainWindow(Gtk.ApplicationWindow):
             term.select_all()
 
     def _open_settings(self, *a):
+        from tpgk.settings_dialog import SettingsDialog
         dialog = SettingsDialog(self)
         dialog.run()
         dialog.destroy()
@@ -1203,6 +1284,37 @@ class MainWindow(Gtk.ApplicationWindow):
     def _on_toggle_show_toolbar(self, check):
         self._settings.set("show_toolbar", check.get_active())
         self._toolbar.set_visible(check.get_active())
+
+    def _on_toggle_show_stats(self, check):
+        self._settings.set("show_stats", check.get_active())
+        self._apply_stats_visibility()
+
+    def _apply_stats_visibility(self):
+        visible = self._settings.get("show_stats", False)
+        self._stats_label.set_visible(visible)
+        if visible:
+            self._start_stats_timer()
+        else:
+            self._stop_stats_timer()
+
+    def _start_stats_timer(self):
+        if self._stats_source_id:
+            return
+        self._refresh_stats()
+        self._stats_source_id = GLib.timeout_add_seconds(3, self._refresh_stats)
+
+    def _stop_stats_timer(self):
+        if self._stats_source_id:
+            GLib.source_remove(self._stats_source_id)
+            self._stats_source_id = 0
+
+    def _refresh_stats(self):
+        from tpgk.system_stats import collect
+        term = self._current_terminal()
+        is_ssh = term.is_ssh() if term else False
+        stats = collect(is_ssh)
+        self._stats_label.set_text(stats)
+        return True
 
     def _toggle_fullscreen(self, *a):
         if self.get_window().get_state() & Gdk.WindowState.FULLSCREEN:
@@ -1362,7 +1474,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _show_about(self, *a):
         dialog = Gtk.AboutDialog(transient_for=self, modal=True)
         dialog.set_program_name("TPGK")
-        dialog.set_version("1.0.0")
+        dialog.set_version("1.1.0")
         dialog.set_comments(
             "Advanced terminal emulator powered by VTE\n"
             "Supports tmux-like splits (View > Split)\n\n"
