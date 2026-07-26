@@ -28,7 +28,7 @@ ok "python3: $(python3 --version)"
 
 step "Preparazione virtualenv (.venv-build/)"
 VENV_DIR="${ROOT}/.venv-build"
-python3 -m venv "${VENV_DIR}" 2>/dev/null || \
+python3 -m venv --system-site-packages "${VENV_DIR}" 2>/dev/null || \
     err "python3 -m venv fallito. Installa python3-venv."
 source "${VENV_DIR}/bin/activate"
 pip install --quiet --upgrade pip

@@ -7,8 +7,11 @@ block_cipher = None
 
 datas, binaries, hiddenimports = collect_all('gi', include_py_files=True)
 
-# Collect gobject-introspection typelib data
+# Collect gobject-introspection typelib data (Debian/Ubuntu multiarch + fallback)
 datas += [('/usr/lib/girepository-1.0', './girepository-1.0')]
+import glob as _glob
+for _d in _glob.glob('/usr/lib/*/girepository-1.0'):
+    datas.append((_d, './girepository-1.0'))
 
 a = Analysis(
     [os.path.join(SPECPATH, '..', '..', '__main__.py')],
@@ -23,6 +26,7 @@ a = Analysis(
         'gi.repository.Gio',
         'gi.repository.Pango',
         'gi.repository.cairo',
+        'cairo',
         'requests',
         'psutil',
         'sqlite3',
