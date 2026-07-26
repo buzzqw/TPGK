@@ -27,7 +27,23 @@ Terminal=false
 Categories=System;TerminalEmulator;
 DESKTOP
 
-mkdir -p "${APPDIR}/usr/share/icons/hicolor/128x128/apps"
+python3 -c "
+import struct, zlib
+w, h = 256, 256
+raw = b''
+for y in range(h):
+    raw += b'\x00' + b'\x00\x99\x33\xff' * w
+def chunk(t, d):
+    c = struct.pack('>I', len(d)) + t + d
+    return c + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+png = b'\x89PNG\r\n\x1a\n'
+png += chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0))
+compressed = zlib.compress(raw)
+png += chunk(b'IDAT', compressed)
+png += chunk(b'IEND', b'')
+with open('${APPDIR}/tpgk.png', 'wb') as f:
+    f.write(png)
+"
 
 cat > "${APPDIR}/AppRun" << 'APPRUN'
 #!/bin/bash
