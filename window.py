@@ -557,6 +557,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._apply_tab_colors()
 
+        self._settings.connect(self._apply_tab_colors)
         self._settings.connect(self._apply_window_size)
 
         GLib.idle_add(self._fix_paned_position)
@@ -625,25 +626,31 @@ class MainWindow(Gtk.ApplicationWindow):
     def _apply_tab_colors(self):
         title_color = self._settings.get("tab_title_color", "")
         active_color = self._settings.get("tab_active_title_color", "")
-        if not title_color or title_color == "#ffffff":
-            title_color = ""
-        if not active_color or active_color == "#ffffff":
-            active_color = ""
 
-        if not title_color and not active_color:
+        title_gdk = Gdk.RGBA()
+        active_gdk = Gdk.RGBA()
+        try:
+            if title_color:
+                title_gdk.parse(title_color)
+            if active_color:
+                active_gdk.parse(active_color)
+        except Exception:
             return
 
-        css = ""
-        if title_color:
-            css += f"notebook tab label {{ color: {title_color}; }} "
-        if active_color:
-            css += f"notebook tab:checked label {{ color: {active_color}; font-weight: bold; }} "
-
-        provider = Gtk.CssProvider()
-        provider.load_from_data(css.encode())
         for nb in (self._notebook, self._notebook2):
-            ctx = nb.get_style_context()
-            ctx.add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            cur = self._current_pages.get(nb, nb.get_current_page())
+            for i in range(nb.get_n_pages()):
+                page = nb.get_nth_page(i)
+                entry = self._tab_labels.get(page)
+                if entry is None:
+                    continue
+                _, lbl = entry
+                if i == cur and active_color:
+                    lbl.override_color(Gtk.StateFlags.NORMAL, active_gdk)
+                elif title_color:
+                    lbl.override_color(Gtk.StateFlags.NORMAL, title_gdk)
+                else:
+                    lbl.override_color(Gtk.StateFlags.NORMAL, None)
 
     # ── Menubar ─────────────────────────────────────────────
 
@@ -1214,6 +1221,7 @@ class MainWindow(Gtk.ApplicationWindow):
             if hasattr(self, '_read_only_action'):
                 self._read_only_action.set_active(not page._vte.get_input_enabled())
         self._update_tabs_menu()
+        GLib.idle_add(self._apply_tab_colors)
 
     # ── Menu callbacks ───────────────────────────────────────
 

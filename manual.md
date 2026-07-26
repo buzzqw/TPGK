@@ -47,6 +47,17 @@ python -m tpgk
 Attivabile da `View > Always Show Toolbar`. Contiene:
 - Nuovo Tab, Nuova Finestra, Split V/H, Copia, Incolla
 
+### System Stats
+
+Attivabile da `View > Show System Stats`. Mostra in fondo alla finestra:
+```
+CPU  12.3%  RAM 2.4G/16.0G (15%)  Disk 45G/500G (9%)
+```
+
+- Aggiornato ogni **3 secondi** via `psutil`
+- In sessione SSH rileva automaticamente lo stato e mostra `[SSH]` come prefisso
+- Non dipende dal prompt della shell: rimane aggiornato anche a terminale fermo
+
 ### Titolo Dinamico
 
 Configurabile: sostituisce, precede, segue, o non mostra il titolo impostato
@@ -285,12 +296,13 @@ funzionalita' della finestra principale.
 | `Ctrl+Shift+S` | Imposta Titolo |
 | `Ctrl+Shift+R` | Reset Terminale |
 | `Ctrl+Shift+X` | Reset e Pulisci |
+| `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Salta tra i prompt (OSC 133) |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom In / Out / Reset |
 | `Ctrl+R` | Ricerca history interattiva |
 | `Ctrl+U` | Kill line (cancella riga) |
 | `Ctrl+W` | Kill word (cancella parola) |
 | `Ctrl+L` | Pulisci schermo |
-| `Ctrl+C` | Interrompi (SIGINT) |
+| `Ctrl+C` | Interrompi (SIGINT) / Esci da ricerca history |
 | `Ctrl+D` | EOF (a riga vuota, chiude il tab all'uscita) |
 | `F11` | Fullscreen |
 | `Ctrl+PageUp` / `Ctrl+PageDown` | Tab Precedente / Successivo |
@@ -316,7 +328,7 @@ funzionalita' della finestra principale.
 
 ### Appearance
 - Font, dimensione, bold
-- Schema colori (7 preset: Dark, Light, Solarized Dark/Light, Gruvbox Dark, Monokai, Nord)
+- Schema colori (8 preset: Dark, Light, Solarized Dark/Light, Gruvbox Dark, Monokai, Nord, Matrix)
 - **Colori individuali**: foreground, background, cursore, testo selezione, sfondo selezione
   (con color picker per ciascuno)
 - **Colori titoli tab**: normale e attivo
@@ -328,7 +340,7 @@ funzionalita' della finestra principale.
 - **Editor palette 16-colori** con color picker per ciascuno:
   Black, Red, Green, Yellow, Blue, Magenta, Cyan, White,
   Bright Black/Red/Green/Yellow/Blue/Magenta/Cyan/White
-- Pulsanti: **Load Preset** (carica da Dark, Light, Solarized, Gruvbox, Monokai, Nord), **Save As Custom**, **Reset to Default**
+- Pulsanti: **Load Preset** (carica da Dark, Light, Solarized, Gruvbox, Monokai, Nord, Matrix), **Save As Custom**, **Reset to Default**
 
 ### Compatibility
 - **Comportamento tasti Backspace e Delete**: Auto-detect, ASCII DEL (127), Escape sequence, Control-H (8)
@@ -416,8 +428,10 @@ Al prossimo avvio TPGK creera' una configurazione pulita.
 
 ```
 ~/.config/tpgk/
-├── settings.json    # Tutte le impostazioni (40+ chiavi)
-└── history.db       # Database SQLite della history
+├── settings.json    # Tutte le impostazioni
+├── history.db       # Database SQLite della history
+├── osc133.sh        # Script integrazione OSC 133 (bash/zsh)
+└── osc-setup.sh     # Setup helper OSC 133
 ```
 
 ---

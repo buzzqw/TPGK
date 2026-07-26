@@ -23,9 +23,11 @@ search, and a built-in notes system.
 - Full terminal emulation via **VTE** (xterm-256color, true color)
 - Tabs with **detach**, **move**, **reorder**, **rename**
 - **Split screen** (tmux-like): single, vertical, horizontal panels
+- **System Stats bar**: CPU, RAM, disk updated every 3s via psutil (View > Show System Stats)
+- **SSH detection**: stats label adapts when inside an SSH session
 - **Scrollback** with configurable limit (or unlimited, `0`)
 - **Scrollbar position**: right, left, or disabled
-- **Toolbar**, **menu bar**, **scrollbar** toggles
+- **Toolbar**, **menu bar**, **scrollbar**, **stats bar** toggles
 - 8 color schemes: Dark, Light, Solarized Dark, Solarized Light,
   Gruvbox Dark, Monokai, Nord, Matrix
 - **Custom 16-color palette** editor with presets
@@ -128,12 +130,13 @@ source .venv/bin/activate && python -m tpgk
 | `Ctrl+Shift+S` | Set Title |
 | `Ctrl+Shift+R` | Reset Terminal |
 | `Ctrl+Shift+X` | Reset and Clear |
+| `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Jump between prompts (OSC 133) |
 | `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom In / Out / Reset |
 | `Ctrl+R` | Interactive History Search |
 | `Ctrl+U` | Kill Line |
 | `Ctrl+W` | Kill Word |
 | `Ctrl+L` | Clear Screen |
-| `Ctrl+C` | Interrupt / Cancel AI |
+| `Ctrl+C` | Interrupt / Cancel AI / Exit history search |
 | `Ctrl+D` | EOF (closes tab on exit) |
 | `F11` | Fullscreen |
 | `Ctrl+Click` URL | Open URL in browser |
@@ -147,8 +150,8 @@ source .venv/bin/activate && python -m tpgk
 
 Settings in `~/.config/tpgk/settings.json`.
 
-All options via **Edit > Preferences** (6 tabs: General, Appearance, Colors,
-Compatibility, AI, Notes):
+All options via **Edit > Preferences** (7 tabs: General, Appearance, Colors,
+Compatibility, AI, Notes, About):
 
 - Font (native chooser), size, bold
 - Color scheme (8 presets) with live preview
@@ -226,13 +229,15 @@ tpgk/
 ├── ai_client.py             # Multi-provider AI API client
 ├── notes.py                 # Timestamped notes manager
 ├── settings.py              # JSON config singleton (50+ settings)
-├── settings_dialog.py       # GTK preferences dialog (6 tabs)
+├── settings_dialog.py       # GTK preferences dialog (7 tabs)
+├── system_stats.py          # CPU/RAM/Disk stats collector
 ├── tests/
 │   ├── test_tpgk.py         # Core unit tests
 │   ├── test_tpgk_extra.py   # Edge-case tests
 │   └── test_new_features.py # New feature tests
 ├── setup.sh                 # One-command installer
 ├── tpgk.sh                  # Launcher script
+├── versiona.sh              # Release automation (commit, tag, GitHub release)
 ├── README.md                # This file
 ├── manual_en.md             # Full English user manual
 └── manual_it.md             # Full Italian user manual

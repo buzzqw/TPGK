@@ -1,0 +1,107 @@
+name: Build AppImage
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag della release (es. v1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    name: Build AppImage (x86_64)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Determina tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "value=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.value }}
+
+      - name: Versione
+        id: ver
+        run: |
+          TAG="${{ steps.tag.outputs.value }}"
+          VER="${TAG#v}"
+          echo "tag=${TAG}"     >> "$GITHUB_OUTPUT"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libvte-2.91-dev \
+            libgirepository1.0-dev gir1.2-gtk-3.0 gir1.2-vte-2.91 \
+            gir1.2-pango-1.0 gir1.2-gdkpixbuf-2.0 \
+            patchelf xvfb
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ runner.hashFiles('**/*.py') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip wheel
+          pip install requests psutil pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          xvfb-run --auto-servernum \
+            pyinstaller packaging/appimage/tpgk.spec --noconfirm
+
+      - name: Create AppDir
+        run: bash packaging/appimage/make-appdir.sh
+
+      - name: Download appimagetool
+        run: |
+          wget -q \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" \
+            -O appimagetool
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract
+          mv squashfs-root appimagetool-extracted
+
+      - name: Build AppImage
+        id: build_appimage
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          APPIMAGE_NAME="TPGK-${VERSION}-x86_64.AppImage"
+          ARCH=x86_64 appimagetool-extracted/AppRun \
+            dist/tpgk.AppDir \
+            "${APPIMAGE_NAME}"
+          echo "name=${APPIMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify AppImage
+        run: |
+          ls -lh "${{ steps.build_appimage.outputs.name }}"
+          file "${{ steps.build_appimage.outputs.name }}"
+
+      - name: Upload AppImage to release
+        run: |
+          gh release upload "${{ steps.ver.outputs.tag }}" \
+            "${{ steps.build_appimage.outputs.name }}" --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,71 @@
+#!/bin/bash
+set -euo pipefail
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+info()  { echo -e "${CYAN}ℹ  ${RESET}$*"; }
+ok()    { echo -e "${GREEN}✔  ${RESET}$*"; }
+warn()  { echo -e "${YELLOW}⚠  ${RESET}$*" >&2; }
+err()   { echo -e "${RED}✘  ${RESET}$*" >&2; exit 1; }
+step()  { echo -e "\n${BOLD}══ $* ══${RESET}"; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+cd "${ROOT}"
+
+VERSION="${1:-$(git describe --tags --always 2>/dev/null || echo 'dev')}"
+VERSION="${VERSION#v}"
+ARCH="$(uname -m)"
+APPIMAGE_NAME="TPGK-${VERSION}-${ARCH}.AppImage"
+
+info "Root progetto: ${ROOT}"
+info "Versione: ${VERSION}  |  Arch: ${ARCH}"
+info "Output:   dist/${APPIMAGE_NAME}"
+
+step "Verifica ambiente"
+command -v python3 >/dev/null 2>&1 || err "python3 non trovato."
+ok "python3: $(python3 --version)"
+
+step "Preparazione virtualenv (.venv-build/)"
+VENV_DIR="${ROOT}/.venv-build"
+python3 -m venv "${VENV_DIR}" 2>/dev/null || \
+    err "python3 -m venv fallito. Installa python3-venv."
+source "${VENV_DIR}/bin/activate"
+pip install --quiet --upgrade pip
+pip install --quiet requests psutil pyinstaller
+ok "Dipendenze installate."
+
+step "Build PyInstaller (--onedir)"
+rm -rf build/ dist/tpgk/ dist/tpgk.AppDir/
+python3 -m PyInstaller packaging/appimage/tpgk.spec --noconfirm
+ok "PyInstaller completato: dist/tpgk/"
+
+step "Assemblaggio AppDir"
+bash packaging/appimage/make-appdir.sh
+ok "AppDir pronto: dist/tpgk.AppDir/"
+
+step "Ricerca appimagetool"
+APPIMAGETOOL=""
+if command -v appimagetool >/dev/null 2>&1; then
+    APPIMAGETOOL="appimagetool"
+elif [[ -f "packaging/appimage/appimagetool-${ARCH}.AppImage" ]]; then
+    APPIMAGETOOL="packaging/appimage/appimagetool-${ARCH}.AppImage"
+else
+    warn "Scaricamento appimagetool..."
+    wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${ARCH}.AppImage" \
+        -O "packaging/appimage/appimagetool-${ARCH}.AppImage"
+    chmod +x "packaging/appimage/appimagetool-${ARCH}.AppImage"
+    APPIMAGETOOL="packaging/appimage/appimagetool-${ARCH}.AppImage"
+fi
+ok "appimagetool: ${APPIMAGETOOL}"
+
+step "Creazione AppImage"
+mkdir -p dist
+export ARCH
+"${APPIMAGETOOL}" dist/tpgk.AppDir "dist/${APPIMAGE_NAME}"
+
+echo ""
+echo -e "${BOLD}${GREEN}══════════════════════════════════════════════════${RESET}"
+echo -e "${GREEN}  AppImage creata: dist/${APPIMAGE_NAME}${RESET}"
+echo -e "  Dimensione: $(du -sh "dist/${APPIMAGE_NAME}" | cut -f1)"
+echo -e "${BOLD}${GREEN}══════════════════════════════════════════════════${RESET}"
