@@ -62,19 +62,48 @@ class HistoryManager:
                 (limit,),
             ).fetchall()
         parts = terms.strip().split()
-        base = " AND ".join(["command LIKE ? ESCAPE '\\'"] * len(parts))
-        params = [f"%{self._like_escape(p)}%" for p in parts]
-        if len(parts) == 1:
-            where = f"(({base}) OR (REPLACE(command, ' ', '') LIKE ? ESCAPE '\\'))"
-            params.append(params[0])
-        else:
-            where = f"({base})"
-        where += " AND command NOT LIKE '/%' ESCAPE '\\'"
+        pos = []
+        neg = []
+        for p in parts:
+            if p.startswith('-') and len(p) > 1:
+                neg.append(p[1:])
+            else:
+                pos.append(p)
+        where_clauses = []
+        params = []
+        if len(pos) == 1:
+            escaped = self._like_escape(pos[0])
+            where_clauses.append(
+                "((command LIKE ? ESCAPE '\\') OR (REPLACE(command, ' ', '') LIKE ? ESCAPE '\\'))"
+            )
+            params.extend([f"%{escaped}%", f"%{escaped}%"])
+        elif len(pos) > 1:
+            where_clauses.append(
+                "(" + " AND ".join(["command LIKE ? ESCAPE '\\'"] * len(pos)) + ")"
+            )
+            params.extend([f"%{self._like_escape(p)}%" for p in pos])
+        for n in neg:
+            where_clauses.append("command NOT LIKE ? ESCAPE '\\'")
+            params.append(f"%{self._like_escape(n)}%")
+        where_clauses.append("command NOT LIKE '/%' ESCAPE '\\'")
+        where = " AND ".join(where_clauses)
         params.append(limit)
         return self._conn.execute(
             f"SELECT id, command, cwd, timestamp FROM commands WHERE {where} ORDER BY id DESC LIMIT ?",
             params,
         ).fetchall()
+
+    def sql_search(self, sql: str):
+        sql_stripped = sql.strip()
+        sql_upper = sql_stripped.upper()
+        forbidden = {'DROP', 'DELETE', 'INSERT', 'UPDATE', 'ALTER', 'CREATE', 'ATTACH'}
+        tokens = set(sql_upper.replace(';', ' ').replace('(', ' ').replace(')', ' ').split())
+        hit = tokens & forbidden
+        if hit:
+            raise ValueError(f"Forbidden operation: {hit}")
+        if not any(sql_upper.startswith(kw) for kw in ('SELECT', 'PRAGMA', 'EXPLAIN')):
+            raise ValueError("Only SELECT, PRAGMA, and EXPLAIN queries are supported")
+        return self._conn.execute(sql_stripped).fetchall()
 
     def interactive_search(self, query: str, limit: int = 100):
         if not query.strip():

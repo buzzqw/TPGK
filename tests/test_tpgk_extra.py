@@ -155,6 +155,122 @@ class TestHistoryEdgeCases:
         assert r[0][2] == ""
 
 
+# ── History: exclusion (-) and SQL search ──────────────────────
+
+class TestHistoryExclusionAndSQL:
+
+    @pytest.fixture
+    def hm(self, tmp_path):
+        import tpgk.history as hist
+        orig_dir, orig_db = hist.HISTORY_DIR, hist.HISTORY_DB
+        db = tmp_path / "test.db"
+        hist.HISTORY_DIR = str(tmp_path)
+        hist.HISTORY_DB = str(db)
+        hm = HistoryManager()
+        yield hm
+        hist.HISTORY_DIR, hist.HISTORY_DB = orig_dir, orig_db
+        try:
+            hm._conn.close()
+        except Exception:
+            pass
+        HistoryManager._instance = None
+
+    # ── Exclusion (-) ─────────────────────────────────────
+
+    def test_exclude_single_term(self, hm):
+        hm.add("ssh host 161", "/home")
+        hm.add("ssh host 222", "/home")
+        hm.add("ssh host 333", "/home")
+        r = hm.search("-161", 10)
+        assert len(r) == 2
+        cmds = [row[1] for row in r]
+        assert "ssh host 161" not in cmds
+
+    def test_exclude_multiple_terms(self, hm):
+        hm.add("ssh host 161", "/home")
+        hm.add("ssh host 222", "/home")
+        hm.add("ssh host 333", "/home")
+        r = hm.search("-161 -222", 10)
+        assert len(r) == 1
+        assert "ssh host 333" in r[0][1]
+
+    def test_exclude_with_positive_term(self, hm):
+        hm.add("ssh host 161", "/home")
+        hm.add("ssh host 222", "/home")
+        hm.add("ssh dev 222", "/home")
+        hm.add("git push", "/home")
+        r = hm.search("ssh -161", 10)
+        assert len(r) == 2
+        cmds = [row[1] for row in r]
+        assert "ssh host 161" not in cmds
+        assert all("ssh" in c or "SSH" in c.upper() for c in cmds)
+
+    def test_exclude_all_terms_shows_nothing_excepted(self, hm):
+        hm.add("echo hello", "/home")
+        hm.add("echo world", "/home")
+        hm.add("echo test", "/home")
+        r = hm.search("-hello -world", 10)
+        assert len(r) == 1
+        assert "echo test" in r[0][1]
+
+    def test_lone_dash_is_literal(self, hm):
+        hm.add("ls -la", "/home")
+        hm.add("ls -ltr", "/home")
+        r = hm.search("-", 10)
+        assert len(r) >= 1
+
+    def test_exclude_with_spaces(self, hm):
+        hm.add("ssh debinis@host 161", "/home")
+        hm.add("ssh debinis@host 222", "/home")
+        r = hm.search("ssh -161", 10)
+        assert len(r) == 1
+        assert "222" in r[0][1]
+
+    # ── SQL search ────────────────────────────────────────
+
+    def test_sql_search_select_all(self, hm):
+        hm.add("cmd1", "/home/a")
+        hm.add("cmd2", "/home/b")
+        hm.add("cmd3", "/home/c")
+        r = hm.sql_search("SELECT id, command, cwd, timestamp FROM commands ORDER BY id ASC")
+        assert len(r) == 3
+        assert r[0][1] == "cmd1"
+
+    def test_sql_search_where_clause(self, hm):
+        hm.add("cmd_keep", "/home")
+        # Add one with / prefix that normal search would exclude
+        hm.add("/cmd_skip", "/home")
+        r = hm.sql_search(
+            "SELECT id, command, cwd, timestamp FROM commands WHERE command LIKE '/%' ORDER BY id"
+        )
+        assert len(r) == 1
+        assert r[0][1] == "/cmd_skip"
+
+    def test_sql_search_forbidden_insert(self, hm):
+        with pytest.raises(ValueError, match="INSERT"):
+            hm.sql_search("INSERT INTO commands VALUES (1, 'x', '', 0, '')")
+
+    def test_sql_search_forbidden_delete(self, hm):
+        with pytest.raises(ValueError, match="DELETE"):
+            hm.sql_search("DELETE FROM commands")
+
+    def test_sql_search_forbidden_drop(self, hm):
+        with pytest.raises(ValueError, match="DROP"):
+            hm.sql_search("DROP TABLE commands")
+
+    def test_sql_search_forbidden_update(self, hm):
+        with pytest.raises(ValueError, match="UPDATE"):
+            hm.sql_search("UPDATE commands SET command='x'")
+
+    def test_sql_search_non_select_raises(self, hm):
+        with pytest.raises(ValueError, match="Forbidden"):
+            hm.sql_search("CREATE TABLE x (a int)")
+
+    def test_sql_search_accepts_pragma(self, hm):
+        r = hm.sql_search("PRAGMA table_info(commands)")
+        assert len(r) >= 1
+
+
 # ── AI Client: edge cases ───────────────────────────────────────
 
 class TestAIClientEdgeCases:

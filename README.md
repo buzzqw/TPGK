@@ -46,7 +46,7 @@ search, and a built-in notes system.
 ### Smart Commands
 | Command | Description |
 |---------|-------------|
-| `/history [terms]` | Search command history |
+| `/history [terms\|-term\|:sql SQL]` | Search command history (AND logic, exclusion with -, raw SQL) |
 | `/ai` | Enter AI chat mode |
 | `/ai context N q` | Include last N lines as AI context |
 | `/ai off` | Exit AI chat mode |
@@ -59,7 +59,8 @@ search, and a built-in notes system.
 ### History
 - **SQLite-backed** command history (`~/.config/tpgk/history.db`)
 - **Ctrl+R**: Interactive reverse-i-search
-- `/history ssh 167`: AND logic search, numbered list with digit replay
+- `/history ssh 167`: AND logic, `/history ssh -161`: exclusion, `/history :sql SELECT ...`: raw SQL
+- **SQL examples**: failed commands (`exit_code != 0`), by directory (`cwd LIKE '%/proj%'`), most used (`GROUP BY command`), last day (`timestamp > datetime('now','-1 day')`)
 - **Alt+1..9**: Re-execute a history result
 
 ### Notes

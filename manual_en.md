@@ -82,10 +82,13 @@ Special commands start with `/` and are processed by TPGK, not the shell.
 /history                  # Show recent commands (numbered 1-9)
 /history ssh 167          # Search commands with "ssh" AND "167"
 /history git push         # Search commands with "git" AND "push"
+/history ssh -161         # Commands with "ssh" EXCLUDING those with "161"
+/history :sql SELECT * FROM commands WHERE exit_code != 0
 ```
-
-After the list, press `1`-`9` to re-execute the corresponding command.
-At any time, press `Alt+1`-`Alt+9` to replay recent commands.
+Prefix a term with `-` to exclude it from results.
+Use `:sql` to run a read-only SQLite query directly on the
+history database (SELECT, PRAGMA, EXPLAIN only).
+![History search screen](img/history.png)
 
 ### /ai
 
@@ -243,9 +246,25 @@ A `reverse-i-search` style bar shows the result count.
 ```
 /history ssh            # All commands containing "ssh"
 /history git push       # Commands containing BOTH "git" and "push"
+/history ssh -161       # Commands with "ssh" EXCLUDING those with "161"
+/history -161           # All commands except those with "161"
+/history :sql SELECT * FROM commands WHERE exit_code != 0
 ```
 
 Search uses AND logic: all terms must appear in the command.
+Prefix a term with `-` to exclude it (becomes NOT LIKE).
+Use `:sql` to run read-only SQLite queries for advanced searches
+(table: `commands` with columns `id`, `command`, `cwd`, `exit_code`, `timestamp`).
+
+#### Useful SQL examples
+```
+/history :sql SELECT * FROM commands WHERE exit_code != 0 ORDER BY id DESC LIMIT 20
+/history :sql SELECT * FROM commands WHERE cwd LIKE '%/projects%' ORDER BY id DESC
+/history :sql SELECT command, COUNT(*) as cnt FROM commands GROUP BY command ORDER BY cnt DESC LIMIT 10
+/history :sql SELECT * FROM commands WHERE timestamp > datetime('now','-1 day') ORDER BY id DESC
+/history :sql SELECT * FROM commands WHERE exit_code = 127 ORDER BY id DESC
+/history :sql SELECT * FROM commands WHERE cwd = '/home/user/project' ORDER BY id DESC LIMIT 30
+```
 Results are numbered (1-9). Press the number to re-execute.
 
 ### 5.3 Quick Replay
@@ -531,7 +550,7 @@ TPGK will create a clean configuration on next startup.
 ## Quick Reference
 
 ```
-/history [terms]     Search command history
+/history [terms|-term|:sql SQL]   Search command history
 /ai                  Enter AI chat mode
 /ai context N q      Send last N lines as AI context
 /ai off              Exit AI chat mode

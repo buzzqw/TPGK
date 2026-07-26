@@ -148,6 +148,7 @@ class TerminalBox(Gtk.Box):
         self._history_list_results = []
         self._history_list_index = 0
         self._history_list_nlines = 0
+        self._history_sql_mode = False
         self._connect_provider = None
         self._connect_model = None
         self._connect_key = ""
@@ -180,7 +181,7 @@ class TerminalBox(Gtk.Box):
             ("/ai context N <question>", "Include last N terminal lines as context"),
             ("/ai off", "Exit AI chat mode"),
             ("/connect [provider]", "Connect to AI provider"),
-            ("/history [terms]", "Search command history"),
+            ("/history [terms | :sql SQL]", "Search command history"),
             ("/wnotes [-file.md] <text>", "Save timestamped note"),
             ("/onotes [-file.md]", "Open notes in editor"),
             ("/help", "Show all commands and shortcuts"),
@@ -1582,6 +1583,7 @@ fi
             self._vte.feed(b'\033[?1049l')
         self._history_search_mode = False
         self._history_list_display = False
+        self._history_sql_mode = False
         self._history_search_query = ""
         self._history_search_results = []
         self._history_list_results = []
@@ -1610,7 +1612,11 @@ fi
                 sel_idx = self._history_list_index
                 self._exit_history_search_mode()
                 if results and 0 <= sel_idx < len(results):
-                    cmd = results[sel_idx][1]
+                    row = results[sel_idx]
+                    if len(row) >= 4:
+                        cmd = row[1]
+                    else:
+                        cmd = str(tuple(row))
                     self._vte.feed_child((cmd + "\n").encode("utf-8"))
                     self._history.add(cmd, self.get_cwd())
                 else:
@@ -1651,7 +1657,8 @@ fi
                 self._history_search_query += text
 
             self._history_list_index = 0
-            self._history_list_results = self._history.search(self._history_search_query, 50)
+            if not self._history_sql_mode:
+                self._history_list_results = self._history.search(self._history_search_query, 50)
             self._history_search_results = [(cmd,) for _, cmd, _, _ in self._history_list_results] if self._history_list_results else []
             self._show_history_list()
             return
@@ -1709,7 +1716,10 @@ fi
                 out += f"\x1b[33mNo results for: {self._history_search_query}\x1b[0m\r\n"
             else:
                 out += "\x1b[33mNo history found.\x1b[0m\r\n"
-            out += "\x1b[90mType to filter, Esc to cancel.\x1b[0m\r\n"
+            if not self._history_sql_mode:
+                out += "\x1b[90mType to filter, Esc to cancel.\x1b[0m\r\n"
+            else:
+                out += "\x1b[90m\u2191\u2193 select, Enter execute, Esc cancel\x1b[0m\r\n"
             self._history_list_nlines = out.count('\n')
             self._vte.feed(f"\033[2J\033[H{out}".encode())
             return
@@ -1721,9 +1731,15 @@ fi
 
         out = "\x1b[36m─── History ───\x1b[0m\r\n"
         for i in range(page_start, page_end):
-            _, cmd, _, ts = results[i]
-            time_str = ts[-8:] if ts else ""
-            display = cmd[:100] + ("..." if len(cmd) > 100 else "")
+            row = results[i]
+            if len(row) >= 4:
+                _, cmd, _, ts = row
+                time_str = ts[-8:] if ts else ""
+                display = str(cmd)[:100] + ("..." if len(str(cmd)) > 100 else "")
+            else:
+                cmd = str(tuple(row))
+                time_str = ""
+                display = cmd[:100] + ("..." if len(cmd) > 100 else "")
 
             if i == self._history_list_index:
                 out += f"\x1b[92m \u25b6 \x1b[0m{display}  \x1b[90m{time_str}\x1b[0m\r\n"
@@ -1731,10 +1747,12 @@ fi
                 out += f"  {display}  \x1b[90m{time_str}\x1b[0m\r\n"
 
         query_disp = f"'{self._history_search_query}'" if self._history_search_query else "all"
-        out += (
-            f"\x1b[90m─── {total} matches for {query_disp} — "
-            f"\u2191\u2193 select, type to filter, Enter execute, Esc cancel\x1b[0m"
-        )
+        footer = ""
+        if not self._history_sql_mode:
+            footer = f"\x1b[90m─── {total} matches for {query_disp} — \u2191\u2193 select, type to filter, Enter execute, Esc cancel\x1b[0m"
+        else:
+            footer = f"\x1b[90m─── {total} results — \u2191\u2193 select, Enter execute, Esc cancel\x1b[0m"
+        out += footer
         self._history_list_nlines = out.count('\n')
         self._vte.feed(f"\033[2J\033[H{out}".encode())
 
@@ -1755,8 +1773,28 @@ fi
         self._history_search_index = 0
         self._history_list_index = 0
         self._history_list_nlines = 0
+        self._history_sql_mode = False
         self._vte.feed(b'\033[?1049h')
-        self._history_list_results = self._history.search(self._history_search_query, 50)
+        query = self._history_search_query.strip()
+        is_sql = False
+        sql = query
+        if query.upper().startswith(':SQL '):
+            is_sql = True
+            sql = query[5:].strip()
+        elif query.upper().startswith(':SQL\t'):
+            is_sql = True
+            sql = query[5:].strip()
+        elif query.upper().startswith('SELECT') or query.upper().startswith('PRAGMA') or query.upper().startswith('EXPLAIN'):
+            is_sql = True
+        if is_sql:
+            self._history_sql_mode = True
+            try:
+                self._history_list_results = self._history.sql_search(sql)
+            except ValueError as e:
+                self._vte.feed(f"\033[2J\033[H\x1b[31mSQL Error: {e}\x1b[0m\r\n\x1b[90mPress Esc to exit.\x1b[0m\r\n".encode())
+                self._history_list_results = []
+        else:
+            self._history_list_results = self._history.search(self._history_search_query, 50)
         self._history_search_results = [(cmd,) for _, cmd, _, _ in self._history_list_results] if self._history_list_results else []
         self._show_history_list()
 
@@ -1947,6 +1985,7 @@ fi
         help_text = (
             "\r\n\x1b[36m─── TPGK Commands ───\x1b[0m\r\n"
             "  \x1b[33m/history\x1b[0m [terms]       Search command history\r\n"
+            "                           Use -term to exclude, :sql SELECT ... for raw SQL\r\n"
             "  \x1b[33m/ai\x1b[0m                   Enter AI chat mode\r\n"
             "  \x1b[33m/ai off\x1b[0m               Exit AI chat mode\r\n"
             "  \x1b[33m/ai context N q\x1b[0m       Include last N terminal lines as context\r\n"

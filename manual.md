@@ -79,10 +79,13 @@ I comandi speciali iniziano con `/` e vengono processati da TPGK, non dalla shel
 /history                  # Mostra ultimi comandi (lista numerata 1-9)
 /history ssh 167          # Cerca comandi con "ssh" E "167"
 /history git push         # Cerca comandi con "git" E "push"
+/history ssh -161         # Comandi con "ssh" ESCLUSI quelli con "161"
+/history :sql SELECT * FROM commands WHERE exit_code != 0
 ```
-
-Dopo la lista, premi `1`...`9` per rieseguire il comando corrispondente.
-In qualsiasi momento, premi `Alt+1`...`Alt+9` per ripetere gli ultimi comandi.
+Con `-` davanti a un termine, lo esclude dai risultati.
+Con `:sql` puoi eseguire una query SQLite direttamente sul database
+della history (sola lettura: SELECT, PRAGMA, EXPLAIN).
+![History search screen](img/history.png)
 
 ### /ai
 
@@ -207,9 +210,25 @@ Viene mostrata una barra in stile `reverse-i-search` con il conteggio dei risult
 ```
 /history ssh            # Tutti i comandi con "ssh"
 /history git push       # Comandi con ENTRAMBI "git" e "push"
+/history ssh -161       # Comandi con "ssh" ESCLUSI quelli con "161"
+/history -161           # Tutti i comandi tranne quelli con "161"
+/history :sql SELECT * FROM commands WHERE exit_code != 0
 ```
 
 La ricerca usa logica AND: tutti i termini devono apparire nel comando.
+Usa `-` davanti a un termine per escluderlo (diventa NOT LIKE).
+Con `:sql` puoi eseguire query SQLite in sola lettura per ricerche avanzate
+(tabella: `commands` con colonne `id`, `command`, `cwd`, `exit_code`, `timestamp`).
+
+#### Esempi SQL utili
+```
+/history :sql SELECT * FROM commands WHERE exit_code != 0 ORDER BY id DESC LIMIT 20
+/history :sql SELECT * FROM commands WHERE cwd LIKE '%/projects%' ORDER BY id DESC
+/history :sql SELECT command, COUNT(*) as cnt FROM commands GROUP BY command ORDER BY cnt DESC LIMIT 10
+/history :sql SELECT * FROM commands WHERE timestamp > datetime('now','-1 day') ORDER BY id DESC
+/history :sql SELECT * FROM commands WHERE exit_code = 127 ORDER BY id DESC
+/history :sql SELECT * FROM commands WHERE cwd = '/home/user/project' ORDER BY id DESC LIMIT 30
+```
 I risultati sono numerati (1-9). Premi il numero per rieseguire.
 
 ### 5.3 Riesecuzione Rapida
@@ -439,7 +458,7 @@ Al prossimo avvio TPGK creera' una configurazione pulita.
 ## Comandi Rapidi
 
 ```
-/history [termini]     Cerca nella history
+/history [termini|-term|:sql SQL]   Cerca nella history
 /ai                    Entra in chat AI
 /ai off                Esci dalla chat AI
 /connect [provider]    Connetti a un provider AI (con auto-detection modelli)
