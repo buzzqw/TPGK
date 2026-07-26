@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
@@ -10,8 +11,8 @@ datas, binaries, hiddenimports = collect_all('gi', include_py_files=True)
 datas += [('/usr/lib/girepository-1.0', './girepository-1.0')]
 
 a = Analysis(
-    ['__main__.py'],
-    pathex=[],
+    [os.path.join(SPECPATH, '..', '..', '__main__.py')],
+    pathex=[os.path.join(SPECPATH, '..', '..')],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports + [
