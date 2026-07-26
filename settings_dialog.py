@@ -221,6 +221,18 @@ class SettingsDialog(Gtk.Dialog):
         self._entry_fm.set_tooltip_text("Override the file manager (e.g. nemo, thunar, dolphin). Leave blank to auto-detect")
         row = self._row(grid, row, "File manager:", self._entry_fm)
 
+        row += 1
+        row = self._section(grid, row, "Session")
+        self._chk_session_restore = Gtk.CheckButton()
+        self._chk_session_restore.set_active(self._settings.get("session_restore", True))
+        self._chk_session_restore.set_tooltip_text("Restore tabs and splits from last session on startup")
+        row = self._row(grid, row, "Restore last session:", self._chk_session_restore)
+
+        self._chk_bell_notify = Gtk.CheckButton()
+        self._chk_bell_notify.set_active(self._settings.get("bell_notification", False))
+        self._chk_bell_notify.set_tooltip_text("Show desktop notification when a command completes (requires OSC 133 shell integration)")
+        row = self._row(grid, row, "Notify on command completion:", self._chk_bell_notify)
+
         sw.add(grid)
         return sw
 
@@ -337,6 +349,32 @@ class SettingsDialog(Gtk.Dialog):
         self._chk_transparency.set_active(self._settings.get("enable_transparency", False))
         self._chk_transparency.set_tooltip_text("Enable RGBA compositing transparency. Requires a compositor (e.g. picom, Wayland)")
         row = self._row(grid, row, "Enable transparency:", self._chk_transparency)
+
+        row += 1
+        row = self._section(grid, row, "Padding")
+        pad_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._spin_pad_h = Gtk.SpinButton.new_with_range(0, 60, 1)
+        self._spin_pad_h.set_value(self._settings.get("window_padding_horizontal", 2))
+        self._spin_pad_h.set_tooltip_text("Horizontal padding inside the terminal window (pixels)")
+        pad_box.pack_start(Gtk.Label(label="H:"), False, False, 0)
+        pad_box.pack_start(self._spin_pad_h, False, False, 0)
+        self._spin_pad_v = Gtk.SpinButton.new_with_range(0, 60, 1)
+        self._spin_pad_v.set_value(self._settings.get("window_padding_vertical", 2))
+        self._spin_pad_v.set_tooltip_text("Vertical padding inside the terminal window (pixels)")
+        pad_box.pack_start(Gtk.Label(label="V:"), False, False, 0)
+        pad_box.pack_start(self._spin_pad_v, False, False, 0)
+        row = self._row(grid, row, "Border:", pad_box)
+
+        row += 1
+        row = self._section(grid, row, "Underlines")
+        self._combo_undercurl = Gtk.ComboBoxText()
+        for style in ("single", "double", "curly", "dashed", "dotted"):
+            self._combo_undercurl.append_text(style)
+        curl_style = self._settings.get("undercurl_style", "single")
+        styles = ["single", "double", "curly", "dashed", "dotted"]
+        self._combo_undercurl.set_active(styles.index(curl_style) if curl_style in styles else 0)
+        self._combo_undercurl.set_tooltip_text("Style for underlined text (e.g. compiler errors, spelling). curly requires VTE >= 0.58")
+        row = self._row(grid, row, "Underline style:", self._combo_undercurl)
 
         sw.add(grid)
         return sw
@@ -771,6 +809,11 @@ class SettingsDialog(Gtk.Dialog):
         s.set("cursor_blink", self._chk_cursor_blink.get_active())
         s.set("opacity", self._spin_opacity.get_value())
         s.set("enable_transparency", self._chk_transparency.get_active())
+        s.set("window_padding_horizontal", int(self._spin_pad_h.get_value()))
+        s.set("window_padding_vertical", int(self._spin_pad_v.get_value()))
+        s.set("undercurl_style", self._combo_undercurl.get_active_text() or "single")
+        s.set("session_restore", self._chk_session_restore.get_active())
+        s.set("bell_notification", self._chk_bell_notify.get_active())
 
         # Fix #9: only persist custom_palette when it actually differs from the selected scheme's
         # preset — otherwise switching schemes in future sessions would have no effect

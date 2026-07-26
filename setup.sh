@@ -74,7 +74,7 @@ if [ -d "$VENV_DIR" ]; then
 fi
 uv venv "$VENV_DIR" --system-site-packages
 source "$VENV_DIR/bin/activate"
-uv pip install --python "$VENV_DIR/bin/python" requests
+uv pip install --python "$VENV_DIR/bin/python" requests psutil
 
 # Pre-compile bytecode
 "$VENV_DIR/bin/python" -m compileall -q "$SCRIPT_DIR"

@@ -741,6 +741,18 @@ class MainWindow(Gtk.ApplicationWindow):
 
         view_menu.append(Gtk.SeparatorMenuItem())
 
+        self._profiles_menu = Gtk.Menu()
+        prof_item = Gtk.MenuItem(label="Profiles")
+        prof_item.set_submenu(self._profiles_menu)
+        view_menu.append(prof_item)
+
+        self._sessions_menu = Gtk.Menu()
+        sess_item = Gtk.MenuItem(label="Sessions")
+        sess_item.set_submenu(self._sessions_menu)
+        view_menu.append(sess_item)
+
+        view_menu.append(Gtk.SeparatorMenuItem())
+
         self._menu_item(view_menu, "Zoom In", lambda *a: self._zoom_in(), "<Primary>plus",
                         "Increase terminal font size")
         self._menu_item(view_menu, "Zoom Out", lambda *a: self._zoom_out(), "<Primary>minus",
@@ -826,6 +838,10 @@ class MainWindow(Gtk.ApplicationWindow):
         for btn, (label, menu) in zip(self._menu_buttons, menus):
             btn.set_popup(menu)
         self._menu_buttons = []
+        if hasattr(self, '_profiles_menu'):
+            self._profiles_menu.connect("show", lambda m: self._populate_profiles_menu(m))
+        if hasattr(self, '_sessions_menu'):
+            self._sessions_menu.connect("show", lambda m: self._populate_sessions_menu(m))
         return False
 
     def _menu_item(self, menu, label, callback, accel=None, tooltip=None):
@@ -1184,6 +1200,72 @@ class MainWindow(Gtk.ApplicationWindow):
             menu.append(item)
             item.show()
 
+    def _populate_profiles_menu(self, menu):
+        for child in menu.get_children():
+            menu.remove(child)
+
+        from tpgk.profiles import list_profiles, apply_profile, save_profile, delete_profile
+
+        active = self._settings.get("active_profile", "")
+        profiles = list_profiles()
+
+        if profiles:
+            for name in profiles:
+                marker = " \u2713" if name == active else ""
+                item = Gtk.MenuItem(label=f"{name}{marker}")
+                item.connect("activate", lambda *a, n=name: apply_profile(self._settings, n))
+                menu.append(item)
+                item.show()
+            menu.append(Gtk.SeparatorMenuItem())
+
+        item = Gtk.MenuItem(label="Save Current as Profile...")
+        item.connect("activate", lambda *a: self._save_profile_dialog())
+        menu.append(item)
+
+        if profiles:
+            del_menu = Gtk.Menu()
+            for name in profiles:
+                ditem = Gtk.MenuItem(label=name)
+                ditem.connect("activate", lambda *a, n=name: delete_profile(n))
+                del_menu.append(ditem)
+            ditem_item = Gtk.MenuItem(label="Delete Profile")
+            ditem_item.set_submenu(del_menu)
+            menu.append(ditem_item)
+
+        menu.show_all()
+
+    def _populate_sessions_menu(self, menu):
+        for child in menu.get_children():
+            menu.remove(child)
+
+        from tpgk.session import list_sessions, load_state, restore_window, delete_session
+
+        sessions = list_sessions()
+
+        if sessions:
+            for name in sessions:
+                item = Gtk.MenuItem(label=f"Restore: {name}")
+                item.connect("activate", lambda *a, n=name: self._load_session_named(n))
+                menu.append(item)
+                item.show()
+            menu.append(Gtk.SeparatorMenuItem())
+
+        item = Gtk.MenuItem(label="Save Current Session As...")
+        item.connect("activate", lambda *a: self._save_session_dialog())
+        menu.append(item)
+
+        if sessions:
+            del_menu = Gtk.Menu()
+            for name in sessions:
+                ditem = Gtk.MenuItem(label=name)
+                ditem.connect("activate", lambda *a, n=name: delete_session(n))
+                del_menu.append(ditem)
+            ditem_item = Gtk.MenuItem(label="Delete Session")
+            ditem_item.set_submenu(del_menu)
+            menu.append(ditem_item)
+
+        menu.show_all()
+
     def _make_tab_list_button(self):
         """Chevron button pinned at the end of a tab strip, so all open tabs
         stay one click away even once the strip overflows and scrolls.
@@ -1365,6 +1447,40 @@ class MainWindow(Gtk.ApplicationWindow):
                     self._tab_base_titles[term] = title
         dialog.destroy()
 
+    def _save_profile_dialog(self):
+        dialog = Gtk.Dialog(title="Save Profile", transient_for=self,
+                            modal=True, destroy_with_parent=True)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Save", Gtk.ResponseType.OK)
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("Profile name...")
+        dialog.get_content_area().pack_start(entry, True, True, 8)
+        dialog.show_all()
+        if dialog.run() == Gtk.ResponseType.OK:
+            name = entry.get_text().strip()
+            if name:
+                from tpgk.profiles import save_profile
+                save_profile(name, self._settings._data)
+                self._settings.set("active_profile", name)
+        dialog.destroy()
+
+    def _save_session_dialog(self):
+        dialog = Gtk.Dialog(title="Save Session", transient_for=self,
+                            modal=True, destroy_with_parent=True)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Save", Gtk.ResponseType.OK)
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("Session name...")
+        import time
+        entry.set_text(time.strftime("%Y-%m-%d_%H:%M"))
+        dialog.get_content_area().pack_start(entry, True, True, 8)
+        dialog.show_all()
+        if dialog.run() == Gtk.ResponseType.OK:
+            name = entry.get_text().strip()
+            if name:
+                self._save_session_named(name)
+        dialog.destroy()
+
     def _set_encoding(self, encoding: str):
         term = self._current_terminal()
         if term:
@@ -1520,6 +1636,7 @@ class MainWindow(Gtk.ApplicationWindow):
         for nb in (self._notebook, self._notebook2):
             for i in range(nb.get_n_pages() - 1, -1, -1):
                 nb.get_nth_page(i).terminate()
+        self._save_session()
         self.destroy()
 
     def _on_window_key(self, widget, event):
@@ -1565,3 +1682,34 @@ class MainWindow(Gtk.ApplicationWindow):
     def focus_other_pane_signal(self):
         if self._split_mode != "single":
             self._focus_other_pane()
+
+    def _save_session(self):
+        if self._settings.get("session_restore", True):
+            from tpgk.session import save_state
+            save_state(self, "last")
+
+    def _restore_session(self):
+        if not self._settings.get("session_restore", True):
+            return
+        from tpgk.session import load_state, restore_window
+        data = load_state("last")
+        if data:
+            restore_window(self, data)
+            if data.get("tabs_left"):
+                default_term = self._notebook.get_nth_page(0)
+                if default_term is not None:
+                    self._close_tab(default_term)
+
+    def _save_session_named(self, name):
+        from tpgk.session import save_state
+        save_state(self, name)
+
+    def _load_session_named(self, name):
+        from tpgk.session import load_state, restore_window
+        data = load_state(name)
+        if data:
+            restore_window(self, data)
+
+    def _toggle_broadcast(self, *a):
+        current = self._settings.get("broadcast_input", False)
+        self._settings.set("broadcast_input", not current)

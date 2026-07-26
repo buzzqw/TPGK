@@ -61,6 +61,13 @@ DEFAULTS = {
     "allow_bold_text": True,
     "terminal_columns": 80,
     "terminal_rows": 24,
+    "window_padding_horizontal": 2,
+    "window_padding_vertical": 2,
+    "bell_notification": False,
+    "undercurl_style": "single",
+    "broadcast_input": False,
+    "active_profile": "",
+    "session_restore": True,
 }
 
 COLOR_SCHEMES = {

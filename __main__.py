@@ -41,6 +41,7 @@ class TpgkApp(Gtk.Application):
         else:
             win = MainWindow(self)
         self.add_window(win)
+        GLib.idle_add(win._restore_session)
 
     def do_startup(self):
         Gtk.Application.do_startup(self)

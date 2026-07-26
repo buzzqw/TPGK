@@ -937,5 +937,261 @@ class TestAddToNote:
             "_add_selection_to_note() non mostra conferma"
 
 
+# ═══════════════════════════════════════════════════════════════════
+# New Feature: Session restore
+# ═══════════════════════════════════════════════════════════════════
+
+class TestSessionRestore:
+
+    def test_session_module_exists(self):
+        from tpgk.session import save_state, load_state, list_sessions, delete_session
+        assert callable(save_state)
+        assert callable(load_state)
+        assert callable(list_sessions)
+        assert callable(delete_session)
+
+    def test_session_restore_default_in_settings(self):
+        assert 'session_restore' in DEFAULTS
+        assert DEFAULTS['session_restore'] is True
+
+    def test_session_restore_called_in_main(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "__main__.py")
+        with open(path) as f:
+            content = f.read()
+        assert '_restore_session' in content
+
+    def test_save_session_on_close(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "window.py")
+        with open(path) as f:
+            content = f.read()
+        assert '_save_session' in content
+
+
+# ═══════════════════════════════════════════════════════════════════
+# New Feature: OSC 8 hyperlink UI
+# ═══════════════════════════════════════════════════════════════════
+
+class TestHyperlinkUI:
+
+    def test_copy_url_method(self):
+        assert '_copy_url' in METHODS
+
+    def test_url_copy_in_context_menu(self):
+        assert 'Copy URL' in SOURCE
+
+    def test_url_open_in_context_menu(self):
+        assert 'Open URL' in SOURCE
+
+    def test_match_add_regex_still_present(self):
+        assert 'match_add_regex' in SOURCE
+
+    def test_set_allow_hyperlink_called(self):
+        assert 'set_allow_hyperlink' in SOURCE
+
+
+# ═══════════════════════════════════════════════════════════════════
+# New Feature: Bell notification
+# ═══════════════════════════════════════════════════════════════════
+
+class TestBellNotification:
+
+    def test_bell_notification_in_defaults(self):
+        assert 'bell_notification' in DEFAULTS
+        assert DEFAULTS['bell_notification'] is False
+
+    def test_bell_notification_method(self):
+        assert '_trigger_bell_notification' in METHODS
+
+    def test_bell_uses_notify_send(self):
+        assert 'notify-send' in SOURCE
+
+    def test_bell_tracks_command(self):
+        assert '_bell_notify_cmd_running' in SOURCE
+
+
+# ═══════════════════════════════════════════════════════════════════
+# New Feature: Window padding
+# ═══════════════════════════════════════════════════════════════════
+
+class TestWindowPadding:
+
+    def test_padding_in_defaults(self):
+        assert 'window_padding_horizontal' in DEFAULTS
+        assert 'window_padding_vertical' in DEFAULTS
+        assert DEFAULTS['window_padding_horizontal'] == 2
+        assert DEFAULTS['window_padding_vertical'] == 2
+
+    def test_apply_padding_method(self):
+        assert '_apply_padding' in METHODS
+
+    def test_apply_padding_called_in_apply_settings(self):
+        idx = SOURCE.find('def apply_settings')
+        block = SOURCE[idx:SOURCE.find('\n    def ', idx + 20)]
+        assert '_apply_padding()' in block
+
+    def test_padding_spinbuttons_in_dialog(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        with open(path) as f:
+            content = f.read()
+        assert '_spin_pad_h' in content
+        assert '_spin_pad_v' in content
+
+
+# ═══════════════════════════════════════════════════════════════════
+# New Feature: Incremental search in scrollback
+# ═══════════════════════════════════════════════════════════════════
+
+class TestIncrementalSearch:
+
+    def test_search_overlay_attribute(self):
+        assert '_search_overlay' in SOURCE
+
+    def test_show_search_method(self):
+        assert '_show_search' in METHODS
+
+    def test_hide_search_method(self):
+        assert '_hide_search' in METHODS
+
+    def test_do_search_method(self):
+        assert '_do_search' in METHODS
+
+    def test_on_search_changed_method(self):
+        assert '_on_search_changed' in METHODS
+
+    def test_on_search_key_method(self):
+        assert '_on_search_key' in METHODS
+
+    def test_navigate_search_method(self):
+        assert '_navigate_search' in METHODS
+
+    def test_search_revealer_initialized(self):
+        assert '_search_revealer' in SOURCE
+
+    def test_search_entry_initialized(self):
+        assert '_search_entry' in SOURCE
+
+    def test_search_shortcut_registered(self):
+        assert 'Gdk.KEY_F' in SOURCE and '_show_search' in SOURCE
+
+    def test_search_context_menu_item(self):
+        assert 'Search Scrollback' in SOURCE
+
+
+# ═══════════════════════════════════════════════════════════════════
+# New Feature: Broadcast input
+# ═══════════════════════════════════════════════════════════════════
+
+class TestBroadcastInput:
+
+    def test_broadcast_in_defaults(self):
+        assert 'broadcast_input' in DEFAULTS
+        assert DEFAULTS['broadcast_input'] is False
+
+    def test_feed_command_bytes_broadcasts(self):
+        idx = SOURCE.find('def feed_command_bytes')
+        block = SOURCE[idx:SOURCE.find('\n    def ', idx + 20)]
+        assert '_broadcast_to_others' in block or 'broadcast_input' in block
+
+    def test_broadcast_to_others_method(self):
+        assert '_broadcast_to_others' in METHODS
+
+    def test_broadcast_shortcut(self):
+        assert 'Gdk.KEY_B' in SOURCE and 'broadcast_input' in SOURCE
+
+    def test_broadcast_context_menu(self):
+        assert 'Broadcast Input' in SOURCE
+
+
+# ═══════════════════════════════════════════════════════════════════
+# New Feature: Multiple profiles
+# ═══════════════════════════════════════════════════════════════════
+
+class TestProfiles:
+
+    def test_profiles_module_exists(self):
+        from tpgk.profiles import save_profile, load_profile, list_profiles, delete_profile, apply_profile
+        assert callable(save_profile)
+        assert callable(load_profile)
+        assert callable(list_profiles)
+        assert callable(delete_profile)
+        assert callable(apply_profile)
+
+    def test_profiles_menu_in_window(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "window.py")
+        with open(path) as f:
+            content = f.read()
+        assert '_profiles_menu' in content
+        assert '_populate_profiles_menu' in content
+
+    def test_save_profile_dialog(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "window.py")
+        with open(path) as f:
+            content = f.read()
+        assert '_save_profile_dialog' in content
+
+    def test_active_profile_in_defaults(self):
+        assert 'active_profile' in DEFAULTS
+
+
+# ═══════════════════════════════════════════════════════════════════
+# New Feature: Quickmarks
+# ═══════════════════════════════════════════════════════════════════
+
+class TestQuickmarks:
+
+    def test_quickmarks_list_initialized(self):
+        assert '_quickmarks = []' in SOURCE or '_quickmarks =' in SOURCE
+
+    def test_set_quickmark_method(self):
+        assert '_set_quickmark' in METHODS
+
+    def test_jump_next_quickmark_method(self):
+        assert '_jump_next_quickmark' in METHODS
+
+    def test_remove_all_quickmarks_method(self):
+        assert '_remove_all_quickmarks' in METHODS
+
+    def test_quickmark_shortcut_set(self):
+        assert 'Gdk.KEY_M' in SOURCE and '_set_quickmark' in SOURCE
+
+    def test_quickmark_shortcut_jump(self):
+        assert '_jump_next_quickmark' in SOURCE
+
+    def test_quickmark_context_menu(self):
+        assert 'Set Quickmark' in SOURCE
+        assert 'Clear All Quickmarks' in SOURCE
+
+
+# ═══════════════════════════════════════════════════════════════════
+# New Feature: Undercurl / styled underlines
+# ═══════════════════════════════════════════════════════════════════
+
+class TestUndercurl:
+
+    def test_undercurl_in_defaults(self):
+        assert 'undercurl_style' in DEFAULTS
+        assert DEFAULTS['undercurl_style'] == 'single'
+
+    def test_apply_undercurl_method(self):
+        assert '_apply_undercurl' in METHODS
+
+    def test_apply_undercurl_called_in_apply_settings(self):
+        idx = SOURCE.find('def apply_settings')
+        block = SOURCE[idx:SOURCE.find('\n    def ', idx + 20)]
+        assert '_apply_undercurl()' in block
+
+    def test_undercurl_styles_available(self):
+        styles = ["single", "double", "curly", "dashed", "dotted"]
+        for style in styles:
+            assert style in SOURCE
+
+    def test_undercurl_combo_in_dialog(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        with open(path) as f:
+            content = f.read()
+        assert '_combo_undercurl' in content
+        assert 'undercurl_style' in content
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

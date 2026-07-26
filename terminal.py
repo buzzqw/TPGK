@@ -2,6 +2,8 @@ import os
 import gi
 import threading
 import subprocess
+import re
+import shutil
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Vte", "2.91")
@@ -57,9 +59,9 @@ class TerminalBox(Gtk.Box):
 
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-
         scroll.add(self._vte)
         self._scroll = scroll
+        self._apply_padding()
 
         self._osc133_margin = Gtk.DrawingArea()
         self._osc133_margin.set_size_request(6, -1)
@@ -119,6 +121,42 @@ class TerminalBox(Gtk.Box):
         cmd_scroll.add(self._cmd_list)
         inner.pack_start(cmd_scroll, True, True, 0)
 
+        self._search_revealer = Gtk.Revealer()
+        self._search_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._search_revealer.set_transition_duration(150)
+        self._search_revealer.set_halign(Gtk.Align.FILL)
+        self._search_revealer.set_valign(Gtk.Align.START)
+        self._search_revealer.set_reveal_child(False)
+        self._overlay.add_overlay(self._search_revealer)
+
+        search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        search_box.set_size_request(-1, 32)
+        search_frame = Gtk.Frame()
+        search_frame.set_shadow_type(Gtk.ShadowType.ETCHED_OUT)
+        search_frame.get_style_context().add_class("command-bar-frame")
+        search_frame.add(search_box)
+        self._search_revealer.add(search_frame)
+
+        self._search_entry = Gtk.SearchEntry()
+        self._search_entry.set_placeholder_text("Search scrollback (Enter=next, Shift+Enter=prev, Esc=close)...")
+        self._search_entry.connect("search-changed", self._on_search_changed)
+        self._search_entry.connect("key-press-event", self._on_search_key)
+        search_box.pack_start(self._search_entry, True, True, 0)
+
+        self._search_label = Gtk.Label(label="")
+        self._search_label.set_halign(Gtk.Align.START)
+        search_box.pack_start(self._search_label, False, False, 6)
+
+        self._search_case_btn = Gtk.ToggleButton(label="Aa")
+        self._search_case_btn.set_tooltip_text("Match case")
+        self._search_case_btn.connect("clicked", lambda b: self._do_search())
+        search_box.pack_start(self._search_case_btn, False, False, 0)
+
+        self._search_regex_btn = Gtk.ToggleButton(label=".*")
+        self._search_regex_btn.set_tooltip_text("Regular expression")
+        self._search_regex_btn.connect("clicked", lambda b: self._do_search())
+        search_box.pack_start(self._search_regex_btn, False, False, 0)
+
         self._vte.connect("child-exited", self._on_child_exited)
         self._vte.connect("selection-changed", self._on_selection_changed)
         self._vte.connect("button-press-event", self._on_button_press)
@@ -173,6 +211,16 @@ class TerminalBox(Gtk.Box):
         self._osc133_last_exit = 0
         self._osc133_cmd_start_row = -1
 
+        self._search_overlay = None
+        self._search_entry = None
+        self._search_results = []
+        self._search_index = 0
+        self._search_tags = []
+        self._quickmarks = []
+        self._quickmark_index = -1
+        self._vte_padding_box = None
+        self._bell_notify_cmd_running = False
+
         self._settings.connect(self.apply_settings)
 
         self._cmd_bar_visible = False
@@ -196,6 +244,29 @@ class TerminalBox(Gtk.Box):
         size = self._settings.get("font_size", 12)
         fd = Pango.FontDescription(f"{family} {size}")
         self._vte.set_font(fd)
+
+    def _apply_padding(self):
+        h = self._settings.get("window_padding_horizontal", 2)
+        v = self._settings.get("window_padding_vertical", 2)
+        self._vte.set_margin_start(h)
+        self._vte.set_margin_end(h)
+        self._vte.set_margin_top(v)
+        self._vte.set_margin_bottom(v)
+
+    def _apply_undercurl(self):
+        style = self._settings.get("undercurl_style", "single")
+        css_map = {
+            "single": "vte-terminal { text-decoration-line: underline; text-decoration-style: solid; }",
+            "double": "vte-terminal { text-decoration-line: underline; text-decoration-style: double; }",
+            "curly": "vte-terminal { text-decoration-line: underline; text-decoration-style: wavy; }",
+            "dashed": "vte-terminal { text-decoration-line: underline; text-decoration-style: dashed; }",
+            "dotted": "vte-terminal { text-decoration-line: underline; text-decoration-style: dotted; }",
+        }
+        css = css_map.get(style, css_map["single"])
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css.encode())
+        ctx = self._vte.get_style_context()
+        ctx.add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
     def _bg_rgba(self):
         # VTE renders its own background opaque by default regardless of the
@@ -282,6 +353,8 @@ class TerminalBox(Gtk.Box):
         self._apply_palette()
         self._apply_scrollbar_position()
         self._apply_size()
+        self._apply_padding()
+        self._apply_undercurl()
         self._vte.set_scrollback_lines(self._settings.get("scrollback_lines", 10000))
         self._vte.set_scroll_on_output(self._settings.get("scroll_on_output", True))
         self._vte.set_scroll_on_keystroke(self._settings.get("scroll_on_keystroke", True))
@@ -604,6 +677,21 @@ fi
 
     def feed_command_bytes(self, data: bytes):
         self._vte.feed_child(data)
+        if self._settings.get("broadcast_input", False):
+            self._broadcast_to_others(data)
+
+    def _broadcast_to_others(self, data_bytes):
+        win = self._window
+        if not hasattr(win, '_notebook'):
+            return
+        for nb in (win._notebook, win._notebook2):
+            for i in range(nb.get_n_pages()):
+                page = nb.get_nth_page(i)
+                if page is not self and hasattr(page, '_vte'):
+                    try:
+                        page._vte.feed_child(data_bytes)
+                    except Exception:
+                        pass
 
     def feed_display(self, text: str):
         """Write display-only text to the terminal screen (never to the shell stdin)."""
@@ -657,12 +745,16 @@ fi
         if cmd == "C":
             self._osc133_cmd_start_row = row
             self._osc133_markers.append((row, "cmd_start", 0))
+            self._bell_notify_cmd_running = True
 
         elif cmd == "D":
             try:
                 self._osc133_last_exit = int(line[1:])
             except ValueError:
                 self._osc133_last_exit = 0
+            if self._bell_notify_cmd_running:
+                self._bell_notify_cmd_running = False
+                self._trigger_bell_notification(self._osc133_last_exit)
 
         elif cmd == "A":
             if row > 0:
@@ -828,66 +920,54 @@ fi
             return True
         if event.button == 1:
             ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
-            url = self._url_at_position(int(event.x), int(event.y))
-            if url and (ctrl or not terminal.get_has_selection()):
-                self._open_url(url)
-                return True
+        url = self._url_at_position(int(event.x), int(event.y))
+        if not url:
+            url = self._url_from_text_at(int(event.x), int(event.y))
+        if url and (ctrl or not terminal.get_has_selection()):
+            self._open_url(url)
+            return True
         return False
 
+    _URL_RE = re.compile(
+        r'(https?://|ssh://|ftp://|git@|www\.)[\w\.\-_~:/?#\[\]@!$&\'()*+,;=%]+',
+        re.IGNORECASE)
+
+    def _pixel_to_cell(self, x, y):
+        cw = self._vte.get_char_width()
+        ch = self._vte.get_char_height()
+        if cw <= 0 or ch <= 0:
+            return (0, 0)
+        padding = self._settings.get("window_padding_horizontal", 2)
+        col = max(0, (x - padding - 8) // cw)
+        row = y // ch
+        return (col, row)
+
     def _url_at_position(self, x, y):
-        try:
-            result = self._vte.translate_coordinates(x, y)
-        except Exception:
+        col, row = self._pixel_to_cell(x, y)
+        result = self._vte.match_check(col, row)
+        if result is None or result[0] is None:
             return None
-        if not result:
-            return None
-        if isinstance(result, tuple):
-            if len(result) == 3:
-                success, col, row = result
-                if not success or col < 0 or row < 0:
-                    return None
-            elif len(result) == 2:
-                col, row = result
-                if col < 0 or row < 0:
-                    return None
-            else:
-                return None
-        else:
-            return None
+        matched_text = result[0]
+        if matched_text:
+            if matched_text.startswith("www.") and not matched_text.startswith("http"):
+                matched_text = "http://" + matched_text
+            return matched_text
+        return None
 
-        tag = self._vte.match_check(int(col), int(row))
-        if tag < 0:
+    def _url_from_text_at(self, x, y):
+        col, row = self._pixel_to_cell(x, y)
+        text = self._vte.get_text_format(Vte.Format.TEXT) or ""
+        lines = text.split("\n")
+        if row < 0 or row >= len(lines):
             return None
-
-        full_text = self._vte.get_text_format(Vte.Format.TEXT) or ""
-        lines = full_text.split("\n")
-        if row < len(lines):
-            line_text = lines[row]
-        else:
-            return None
-
-        url_match = GLib.Regex.new(
-            r'(https?://|ssh://|ftp://|git@|www\.)[\w\.\-_~:/?#\[\]@!$&\'()*+,;=%]+',
-            GLib.RegexCompileFlags.CASELESS, 0)
-        match_info = url_match.match(line_text, 0)
-        if not match_info:
-            return None
-        start, end = match_info.fetch_pos()
-        url = line_text[start:end]
-
-        col_int = int(col)
-        if col_int < start or col_int > end:
-            offset = 0
-            while True:
-                match_info = url_match.match(line_text, offset)
-                if not match_info:
-                    break
-                s, e = match_info.fetch_pos()
-                if s <= col_int <= e:
-                    return line_text[s:e]
-                offset = e
-            return None
-        return url
+        line = lines[row]
+        for m in self._URL_RE.finditer(line):
+            if m.start() <= col <= m.end():
+                url = m.group(0)
+                if url.startswith("www.") and not url.startswith("http"):
+                    url = "http://" + url
+                return url
+        return None
 
     def _open_url(self, url):
         if not url:
@@ -926,6 +1006,20 @@ fi
             copy_out_item.connect("activate", lambda _: self._copy_command_output())
             menu.append(copy_out_item)
 
+        url = self._url_at_position(int(event.x), int(event.y))
+        if not url:
+            url = self._url_from_text_at(int(event.x), int(event.y))
+        if url:
+            menu.append(Gtk.SeparatorMenuItem())
+            copy_url_item = Gtk.MenuItem(label=f"Copy URL: {url[:60]}{'...' if len(url) > 60 else ''}")
+            copy_url_item.set_tooltip_text("Copy this URL to the clipboard")
+            copy_url_item.connect("activate", lambda _: self._copy_url(url))
+            menu.append(copy_url_item)
+
+            open_url_item = Gtk.MenuItem(label="Open URL")
+            open_url_item.connect("activate", lambda _: self._open_url(url))
+            menu.append(open_url_item)
+
         menu.append(Gtk.SeparatorMenuItem())
 
         fm_item = Gtk.MenuItem(label="Open File Manager Here")
@@ -937,6 +1031,32 @@ fi
         sel_all_item = Gtk.MenuItem(label="Select All")
         sel_all_item.connect("activate", lambda _: self.select_all())
         menu.append(sel_all_item)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        srch_item = Gtk.MenuItem(label="Search Scrollback...")
+        srch_item.set_tooltip_text("Search in the scrollback buffer (Ctrl+Shift+F)")
+        srch_item.connect("activate", lambda _: self._show_search())
+        menu.append(srch_item)
+
+        qm_item = Gtk.MenuItem(label="Set Quickmark")
+        qm_item.set_tooltip_text("Bookmark this position (Ctrl+Shift+M)")
+        qm_item.connect("activate", lambda _: self._set_quickmark())
+        menu.append(qm_item)
+
+        if self._quickmarks:
+            clear_qm_item = Gtk.MenuItem(label=f"Clear All Quickmarks ({len(self._quickmarks)})")
+            clear_qm_item.connect("activate", lambda _: self._remove_all_quickmarks())
+            menu.append(clear_qm_item)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        broadcast_on = self._settings.get("broadcast_input", False)
+        cast_item = Gtk.CheckMenuItem(label="Broadcast Input")
+        cast_item.set_active(broadcast_on)
+        cast_item.connect("activate",
+                          lambda b: self._settings.set("broadcast_input", b.get_active()))
+        menu.append(cast_item)
 
         menu.show_all()
         menu.popup_at_pointer(event)
@@ -1015,6 +1135,19 @@ fi
             if key == Gdk.KEY_Down:
                 self._scroll_to_osc133_prompt(direction_up=False)
                 return True
+            if key == Gdk.KEY_F or key == Gdk.KEY_f:
+                self._show_search()
+                return True
+            if key == Gdk.KEY_M or key == Gdk.KEY_m:
+                self._set_quickmark()
+                return True
+            if key == Gdk.KEY_B or key == Gdk.KEY_b:
+                current = self._settings.get("broadcast_input", False)
+                self._settings.set("broadcast_input", not current)
+                self._vte.feed(
+                    f"\r\n\x1b[33mBroadcast input: {'ON' if not current else 'OFF'}\x1b[0m\r\n".encode()
+                )
+                return True
 
         if ctrl and not shift:
             if key == Gdk.KEY_R or key == Gdk.KEY_r:
@@ -1045,6 +1178,9 @@ fi
                 self._input_shadow = parts[0] if len(parts) > 1 else ""
                 return True
             if key == Gdk.KEY_C or key == Gdk.KEY_c:
+                shadow = self._input_shadow.strip()
+                if shadow and not self._is_tpgk_command(shadow):
+                    self._history.add(shadow, self.get_cwd())
                 self.feed_command_bytes(b'\x03')
                 self._input_shadow = ""
                 self._ai_mode = False
@@ -1063,6 +1199,9 @@ fi
                 return True
             if key == Gdk.KEY_0:
                 self.zoom_reset()
+                return True
+            if key == Gdk.KEY_M or key == Gdk.KEY_m:
+                self._jump_next_quickmark()
                 return True
 
         if ctrl and alt:
@@ -1579,8 +1718,6 @@ fi
     # ── History search ────────────────────────────────────────
 
     def _exit_history_search_mode(self):
-        if self._history_list_display:
-            self._vte.feed(b'\033[?1049l')
         self._history_search_mode = False
         self._history_list_display = False
         self._history_sql_mode = False
@@ -1589,6 +1726,10 @@ fi
         self._history_list_results = []
         self._history_list_index = 0
         self._history_list_nlines = 0
+        try:
+            self._vte.feed(b'\033[?1049l\033[H\033[2J')
+        except Exception:
+            pass
 
     def _start_history_search(self):
         self._history_search_mode = True
@@ -1601,10 +1742,10 @@ fi
         key = event.keyval
         text = event.string
 
-        if key == Gdk.KEY_Escape:
+        if key == Gdk.KEY_Escape or key == 0xff1b or key == 0x1b:
             self._exit_history_search_mode()
             self._vte.feed(b'\r\n')
-            return
+            return True
 
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
             if self._history_list_display:
@@ -2003,10 +2144,204 @@ fi
             "  \x1b[90mCtrl+Shift+C/V\x1b[0m          Copy / Paste\r\n"
             "  \x1b[90mCtrl+Shift+T/N\x1b[0m          New Tab / Window\r\n"
             "  \x1b[90mAlt+1..9\x1b[0m                Replay history\r\n"
+            "  \x1b[90mCtrl+Shift+F\x1b[0m           Search scrollback\r\n"
+            "  \x1b[90mCtrl+Shift+M\x1b[0m           Set quickmark\r\n"
+            "  \x1b[90mCtrl+M\x1b[0m                  Jump to next quickmark\r\n"
+            "  \x1b[90mCtrl+Shift+B\x1b[0m           Toggle broadcast input\r\n"
             "\x1b[36m─────────────────────────\x1b[0m\r\n"
         )
         self._vte.feed(help_text.encode())
 
+    def _trigger_bell_notification(self, exit_code):
+        if not self._settings.get("bell_notification", False):
+            return
+        if not shutil.which("notify-send"):
+            return
+        try:
+            cwd = self.get_cwd()
+            status = "succeeded" if exit_code == 0 else f"failed (exit {exit_code})"
+            subprocess.Popen(
+                ["notify-send", "-a", "TPGK", "-i", "terminal",
+                 "Command finished",
+                 f"Command {status} in {cwd}"],
+                start_new_session=True)
+        except Exception:
+            pass
+
+    def _copy_url(self, url):
+        if url:
+            clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+            clipboard.set_text(url, -1)
+
+    def _show_search(self):
+        if self._search_revealer.get_reveal_child():
+            return
+        self._search_revealer.set_reveal_child(True)
+        self._search_entry.set_text("")
+        self._search_entry.grab_focus()
+        self._clear_search_highlights()
+
+    def _hide_search(self):
+        self._search_revealer.set_reveal_child(False)
+        self._clear_search_highlights()
+        self._search_results = []
+        self._search_index = 0
+        self._search_label.set_text("")
+        self._vte.grab_focus()
+
+    def _on_search_changed(self, entry):
+        self._do_search()
+
+    def _do_search(self):
+        self._clear_search_highlights()
+        self._search_results = []
+        self._search_index = 0
+
+        query = self._search_entry.get_text()
+        if not query or len(query) < 2:
+            self._search_label.set_text("")
+            return
+
+        text = self._vte.get_text_format(Vte.Format.TEXT) or ""
+        lines = text.split("\n")
+
+        use_regex = self._search_regex_btn.get_active()
+        case_sensitive = self._search_case_btn.get_active()
+
+        for row_num, line in enumerate(lines):
+            if use_regex:
+                try:
+                    if case_sensitive:
+                        rc = re.compile(query)
+                    else:
+                        rc = re.compile(query, re.IGNORECASE)
+                except re.error:
+                    self._search_label.set_text("Invalid regex")
+                    return
+                if rc.search(line):
+                    self._search_results.append((row_num, line))
+            else:
+                if case_sensitive:
+                    found = query in line
+                else:
+                    found = query.lower() in line.lower()
+                if found:
+                    self._search_results.append((row_num, line))
+
+        if self._search_results:
+            self._search_index = 0
+            self._search_label.set_text(f"1/{len(self._search_results)}")
+            self._scroll_to_search_result(0)
+        else:
+            self._search_label.set_text(f"No matches")
+
+    def _scroll_to_search_result(self, index):
+        if not self._search_results or index < 0 or index >= len(self._search_results):
+            return
+        row = self._search_results[index][0]
+        vadj = self._scroll.get_vadjustment()
+        if vadj:
+            vadj.set_value(row)
+        self._highlight_search_result(row)
+
+    def _highlight_search_result(self, row):
+        self._clear_search_highlights()
+        try:
+            tag = self._vte.match_add_regex(
+                Vte.Regex.new_for_match(
+                    re.escape(self._search_entry.get_text()),
+                    -1, Vte.REGEX_FLAGS_DEFAULT | 0x400),
+                0)
+            self._search_tags.append(tag)
+            self._vte.match_set_cursor_name(tag, "text")
+        except Exception:
+            pass
+
+    def _clear_search_highlights(self):
+        for tag in self._search_tags:
+            try:
+                self._vte.match_remove(tag)
+            except Exception:
+                pass
+        self._search_tags = []
+
+    def _on_search_key(self, entry, event):
+        key = event.keyval
+        state = event.state
+        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+
+        if key == Gdk.KEY_Escape:
+            self._hide_search()
+            return True
+        if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
+            if shift:
+                self._navigate_search(-1)
+            else:
+                self._navigate_search(1)
+            return True
+        if key == Gdk.KEY_Up:
+            self._navigate_search(-1)
+            return True
+        if key == Gdk.KEY_Down:
+            self._navigate_search(1)
+            return True
+        return False
+
+    def _navigate_search(self, delta):
+        if not self._search_results:
+            return
+        self._search_index = (self._search_index + delta) % len(self._search_results)
+        self._scroll_to_search_result(self._search_index)
+        self._search_label.set_text(f"{self._search_index + 1}/{len(self._search_results)}")
+
+    def _set_quickmark(self):
+        try:
+            _col, row = self._vte.get_cursor_position()
+        except Exception:
+            return
+        if row < 0:
+            return
+        for existing in self._quickmarks:
+            if abs(existing - row) < 3:
+                return
+        self._quickmarks.append(row)
+        self._quickmarks.sort()
+        self._quickmark_index = -1
+        self._vte.feed(f"\r\n\x1b[32m+ Quickmark set at line {row}\x1b[0m\r\n".encode())
+
+    def _jump_next_quickmark(self):
+        if not self._quickmarks:
+            return
+        try:
+            _col, cur_row = self._vte.get_cursor_position()
+        except Exception:
+            cur_row = 0
+
+        self._quickmark_index = (self._quickmark_index + 1) % len(self._quickmarks)
+        target = self._quickmarks[self._quickmark_index]
+        vadj = self._scroll.get_vadjustment()
+        if vadj:
+            vadj.set_value(target)
+
+    def _remove_all_quickmarks(self):
+        self._quickmarks = []
+        self._quickmark_index = -1
+
+    def feed_to_all_terminals(self, data_bytes):
+        if not self._settings.get("broadcast_input", False):
+            return False
+        win = self._window
+        if not hasattr(win, '_notebook'):
+            return False
+        for nb in (win._notebook, win._notebook2):
+            for i in range(nb.get_n_pages()):
+                page = nb.get_nth_page(i)
+                if page is not self and hasattr(page, '_vte'):
+                    try:
+                        page._vte.feed_child(data_bytes)
+                    except Exception:
+                        pass
+        return True
 
 
 def _hex_to_gdk(hex_color: str):
