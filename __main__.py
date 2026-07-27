@@ -28,18 +28,19 @@ def _reload_modules():
 
 
 class TpgkApp(Gtk.Application):
-    def __init__(self):
+    def __init__(self, start_dir=None):
         super().__init__(application_id="com.buzzqw.tpgk",
                          flags=Gio.ApplicationFlags.NON_UNIQUE)
         self._settings = Settings()
+        self._start_dir = start_dir
 
     def do_activate(self):
         if os.environ.pop("TPGK_RELOAD_MODULES", None):
             _reload_modules()
             from tpgk.window import MainWindow as FreshMainWindow
-            win = FreshMainWindow(self)
+            win = FreshMainWindow(self, start_dir=self._start_dir)
         else:
-            win = MainWindow(self)
+            win = MainWindow(self, start_dir=self._start_dir)
         self.add_window(win)
         GLib.idle_add(win._restore_session)
 
@@ -68,7 +69,10 @@ class TpgkApp(Gtk.Application):
 
 
 def main():
-    app = TpgkApp()
+    start_dir = os.getcwd()
+    if len(sys.argv) > 1 and os.path.isdir(sys.argv[1]):
+        start_dir = sys.argv[1]
+    app = TpgkApp(start_dir=start_dir)
     return app.run(sys.argv)
 
 

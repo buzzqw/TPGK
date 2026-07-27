@@ -479,9 +479,10 @@ class _DetachedWindow(Gtk.Window):
 
 
 class MainWindow(Gtk.ApplicationWindow):
-    def __init__(self, app):
+    def __init__(self, app, start_dir=None):
         super().__init__(application=app)
         self._settings = Settings()
+        self._start_dir = start_dir
 
         self.set_title("TPGK Terminal")
         cols = self._settings.get("terminal_columns", 80)
@@ -561,7 +562,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._settings.connect(self._apply_window_size)
 
         GLib.idle_add(self._fix_paned_position)
-        GLib.idle_add(self._add_new_tab)
+        GLib.idle_add(lambda: self._add_new_tab(cwd=self._start_dir))
 
     def _apply_window_size(self):
         cols = self._settings.get("terminal_columns", 80)

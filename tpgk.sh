@@ -6,5 +6,7 @@ if [ -x "$VENV_PYTHON" ]; then
 else
     PYTHON_BIN="python3"
 fi
-cd "$HOME"
+if [ -d "$1" ]; then
+    cd "$1" || cd "$HOME"
+fi
 exec env PYTHONPATH="$(dirname "$SCRIPT_DIR")" "$PYTHON_BIN" -m tpgk "$@"
