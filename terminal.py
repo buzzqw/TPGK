@@ -31,8 +31,12 @@ class TerminalBox(Gtk.Box):
         self._vte = Vte.Terminal()
         self._vte.set_scrollback_lines(self._settings.get("scrollback_lines", 10000))
         self._vte.set_mouse_autohide(True)
-        self._vte.set_scroll_on_output(self._settings.get("scroll_on_output", True))
+        # VTE's own scroll-on-output always forces the view to the bottom, even if the
+        # user scrolled up to read something. We handle it ourselves in _on_vadj_changed
+        # so it only follows new output when the user was already at the bottom.
+        self._vte.set_scroll_on_output(False)
         self._vte.set_scroll_on_keystroke(self._settings.get("scroll_on_keystroke", True))
+        self._scroll_follow = True
 
         self._apply_font()
         self._apply_colors()
@@ -71,8 +75,8 @@ class TerminalBox(Gtk.Box):
 
         vadj = self._scroll.get_vadjustment()
         if vadj:
-            vadj.connect("value-changed", lambda a: self._osc133_margin.queue_draw())
-            vadj.connect("changed", lambda a: self._osc133_margin.queue_draw())
+            vadj.connect("value-changed", self._on_vadj_value_changed)
+            vadj.connect("changed", self._on_vadj_changed)
 
         term_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         term_box.pack_start(self._osc133_margin, False, False, 0)
@@ -356,7 +360,6 @@ class TerminalBox(Gtk.Box):
         self._apply_padding()
         self._apply_undercurl()
         self._vte.set_scrollback_lines(self._settings.get("scrollback_lines", 10000))
-        self._vte.set_scroll_on_output(self._settings.get("scroll_on_output", True))
         self._vte.set_scroll_on_keystroke(self._settings.get("scroll_on_keystroke", True))
         if self._settings.get("cursor_blink", True):
             self._vte.set_cursor_blink_mode(Vte.CursorBlinkMode.ON)
@@ -700,6 +703,21 @@ fi
     def _scroll_to_bottom(self):
         if self._settings.get("scroll_on_keystroke", True):
             pass
+
+    def _on_vadj_value_changed(self, adj):
+        self._osc133_margin.queue_draw()
+        bottom = max(0.0, adj.get_upper() - adj.get_page_size())
+        self._scroll_follow = adj.get_value() >= bottom - 0.5
+
+    def _on_vadj_changed(self, adj):
+        self._osc133_margin.queue_draw()
+        if not self._settings.get("scroll_on_output", True):
+            return
+        if not getattr(self, "_scroll_follow", True):
+            return
+        bottom = max(0.0, adj.get_upper() - adj.get_page_size())
+        if adj.get_value() != bottom:
+            adj.set_value(bottom)
 
     def _on_osc133_pipe_data(self, source, condition):
         try:
@@ -1718,6 +1736,7 @@ fi
     # ── History search ────────────────────────────────────────
 
     def _exit_history_search_mode(self):
+        was_list_display = self._history_list_display
         self._history_search_mode = False
         self._history_list_display = False
         self._history_sql_mode = False
@@ -1726,10 +1745,11 @@ fi
         self._history_list_results = []
         self._history_list_index = 0
         self._history_list_nlines = 0
-        try:
-            self._vte.feed(b'\033[?1049l\033[H\033[2J')
-        except Exception:
-            pass
+        if was_list_display:
+            try:
+                self._vte.feed(b'\033[?1049l\033[H\033[2J')
+            except Exception:
+                pass
 
     def _start_history_search(self):
         self._history_search_mode = True
