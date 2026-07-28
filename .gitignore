@@ -1,6 +1,6 @@
 __pycache__/
 *.pyc
-.venv/
+.venv*/
 .pytest_cache/
 *.egg-info/
 dist/
@@ -9,3 +9,4 @@ build/
 *.swp
 *.swo
 *~
+packaging/appimage/appimagetool-*.AppImage

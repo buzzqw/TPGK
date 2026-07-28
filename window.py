@@ -11,6 +11,7 @@ gi.require_version("Vte", "2.91")
 from gi.repository import Gtk, Gdk, GLib, Vte
 from tpgk.settings import Settings
 from tpgk.terminal import TerminalBox
+from tpgk import __version__
 
 
 SIGNALS = [
@@ -424,7 +425,7 @@ class _DetachedWindow(Gtk.Window):
     def _show_about(self, *a):
         dialog = Gtk.AboutDialog(transient_for=self, modal=True)
         dialog.set_program_name("TPGK")
-        dialog.set_version("1.1.0")
+        dialog.set_version(__version__)
         dialog.set_comments("Advanced terminal emulator powered by VTE")
         dialog.set_copyright("Andres Zanzani")
         dialog.set_license_type(Gtk.License.CUSTOM)
@@ -433,6 +434,7 @@ class _DetachedWindow(Gtk.Window):
         dialog.destroy()
 
     def _on_close(self, *a):
+        self._settings.disconnect(self._apply_window_size)
         self._terminal.terminate()
         self.destroy()
 
@@ -453,7 +455,7 @@ class _DetachedWindow(Gtk.Window):
     def new_tab_signal(self):
         self._on_new_window()
 
-    def close_tab_signal(self):
+    def close_tab_signal(self, term=None):
         self._on_close()
 
     def close_window_signal(self):
@@ -525,7 +527,6 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._tab_base_titles = {}
         self._tab_labels = {}
-        self._widget_nb_map = {}
         self._next_tab_number = 1
         self._current_pages = {}
 
@@ -581,7 +582,6 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _fix_paned_position(self):
         self._paned.set_position(99999)
-        self._needs_handle_fix = False
 
     def _active_notebook(self):
         if self._split_mode == "single":
@@ -606,10 +606,10 @@ class MainWindow(Gtk.ApplicationWindow):
         return self._notebook
 
     def _current_terminal(self):
-        for nb in (self._notebook, self._notebook2):
-            idx = nb.get_current_page()
-            if idx >= 0:
-                return nb.get_nth_page(idx)
+        nb = self._active_notebook()
+        idx = nb.get_current_page()
+        if idx >= 0:
+            return nb.get_nth_page(idx)
         return None
 
     def _find_terminal(self, term):
@@ -921,7 +921,6 @@ class MainWindow(Gtk.ApplicationWindow):
         lbl_box, lbl = self._make_tab_label(
             title, lambda t=page: self._close_tab(t), term=page)
         self._tab_labels[page] = (lbl_box, lbl)
-        self._widget_nb_map[page] = dst
         dst.append_page(page, lbl_box)
         dst.set_tab_reorderable(page, True)
         dst.show_all()
@@ -1026,7 +1025,6 @@ class MainWindow(Gtk.ApplicationWindow):
         lbl_box, lbl = self._make_tab_label(
             base_title, lambda t=term: self._close_tab(t), term=term)
         self._tab_labels[term] = (lbl_box, lbl)
-        self._widget_nb_map[term] = nb
 
         idx = nb.append_page(term, lbl_box)
         nb.set_tab_reorderable(term, True)
@@ -1124,13 +1122,12 @@ class MainWindow(Gtk.ApplicationWindow):
             term.terminate()
             self._tab_labels.pop(term, None)
             self._tab_base_titles.pop(term, None)
-            self._widget_nb_map.pop(term, None)
             nb.remove_page(idx)
             self._update_tabs_menu()
 
     def _on_page_removed(self):
         if self._notebook.get_n_pages() == 0 and self._notebook2.get_n_pages() == 0:
-            self.destroy()
+            self._on_close()
         elif self._notebook2.get_n_pages() == 0 and self._split_mode != "single":
             self._set_split("single")
 
@@ -1573,7 +1570,6 @@ class MainWindow(Gtk.ApplicationWindow):
         nb.remove_page(idx)
         self._tab_labels.pop(term, None)
         self._tab_base_titles.pop(term, None)
-        self._widget_nb_map.pop(term, None)
         self._update_tabs_menu()
 
         new_win = _DetachedWindow(term, title)
@@ -1599,7 +1595,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def _show_about(self, *a):
         dialog = Gtk.AboutDialog(transient_for=self, modal=True)
         dialog.set_program_name("TPGK")
-        dialog.set_version("1.1.0")
+        dialog.set_version(__version__)
         dialog.set_comments(
             "Advanced terminal emulator powered by VTE\n"
             "Supports tmux-like splits (View > Split)\n\n"
@@ -1637,6 +1633,8 @@ class MainWindow(Gtk.ApplicationWindow):
         for nb in (self._notebook, self._notebook2):
             for i in range(nb.get_n_pages() - 1, -1, -1):
                 nb.get_nth_page(i).terminate()
+        self._settings.disconnect(self._apply_tab_colors)
+        self._settings.disconnect(self._apply_window_size)
         self._save_session()
         self.destroy()
 
@@ -1658,8 +1656,8 @@ class MainWindow(Gtk.ApplicationWindow):
     def new_tab_signal(self):
         self._add_new_tab()
 
-    def close_tab_signal(self):
-        self._close_tab()
+    def close_tab_signal(self, term=None):
+        self._close_tab(term)
 
     def close_window_signal(self):
         self._on_close()
@@ -1710,7 +1708,3 @@ class MainWindow(Gtk.ApplicationWindow):
         data = load_state(name)
         if data:
             restore_window(self, data)
-
-    def _toggle_broadcast(self, *a):
-        current = self._settings.get("broadcast_input", False)
-        self._settings.set("broadcast_input", not current)

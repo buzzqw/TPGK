@@ -4,6 +4,8 @@ import threading
 import subprocess
 import re
 import shutil
+import sqlite3
+import termios
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Vte", "2.91")
@@ -166,7 +168,6 @@ class TerminalBox(Gtk.Box):
         self._vte.connect("button-press-event", self._on_button_press)
         self._vte.connect("key-press-event", self._on_key_press)
         self._vte.connect("window-title-changed", self._on_title_changed)
-        self._vte.connect("contents-changed", self._on_contents_changed)
         self._vte.add_events(Gdk.EventMask.SCROLL_MASK)
 
         url_regex = Vte.Regex.new_for_match(
@@ -199,6 +200,7 @@ class TerminalBox(Gtk.Box):
         self._model_list = []
         self._history_show_results = []
         self._async_pending = False
+        self._async_generation = 0
         self._provider_worker = None
         self._model_worker = None
 
@@ -214,16 +216,22 @@ class TerminalBox(Gtk.Box):
         self._osc133_buf = b""
         self._osc133_last_exit = 0
         self._osc133_cmd_start_row = -1
+        self._osc133_timer_pending = False
 
-        self._search_overlay = None
-        self._search_entry = None
         self._search_results = []
         self._search_index = 0
         self._search_tags = []
         self._quickmarks = []
         self._quickmark_index = -1
-        self._vte_padding_box = None
         self._bell_notify_cmd_running = False
+
+        self._undercurl_provider = Gtk.CssProvider()
+        ctx = self._vte.get_style_context()
+        ctx.add_provider(self._undercurl_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        self._cached_backspace_binding = self._settings.get("backspace_binding", "ascii-del")
+        self._cached_delete_binding = self._settings.get("delete_binding", "escape-sequence")
+        self._cached_broadcast_input = self._settings.get("broadcast_input", False)
 
         self._settings.connect(self.apply_settings)
 
@@ -267,10 +275,7 @@ class TerminalBox(Gtk.Box):
             "dotted": "vte-terminal { text-decoration-line: underline; text-decoration-style: dotted; }",
         }
         css = css_map.get(style, css_map["single"])
-        provider = Gtk.CssProvider()
-        provider.load_from_data(css.encode())
-        ctx = self._vte.get_style_context()
-        ctx.add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self._undercurl_provider.load_from_data(css.encode())
 
     def _bg_rgba(self):
         # VTE renders its own background opaque by default regardless of the
@@ -372,6 +377,9 @@ class TerminalBox(Gtk.Box):
                 self._vte.set_encoding(encoding)
             except Exception:
                 pass
+        self._cached_backspace_binding = self._settings.get("backspace_binding", "ascii-del")
+        self._cached_delete_binding = self._settings.get("delete_binding", "escape-sequence")
+        self._cached_broadcast_input = self._settings.get("broadcast_input", False)
 
     def update_font(self):
         self._apply_font()
@@ -401,7 +409,7 @@ class TerminalBox(Gtk.Box):
             self._write_osc133_script()
             fifo_path = os.path.join(
                 os.path.expanduser("~"), ".config", "tpgk",
-                f"osc133_{os.getpid()}.fifo")
+                f"osc133_{os.getpid()}_{id(self)}.fifo")
             try:
                 os.unlink(fifo_path)
             except OSError:
@@ -516,6 +524,7 @@ fi
         try:
             with open(script_path, "w") as f:
                 f.write(script)
+            os.chmod(script_path, 0o600)
         except OSError:
             pass
 
@@ -536,6 +545,19 @@ fi
                     self._on_osc133_pipe_data)
 
     def terminate(self):
+        if self._osc133_rfd >= 0:
+            try:
+                os.close(self._osc133_rfd)
+            except OSError:
+                pass
+            self._osc133_rfd = -1
+        if self._osc133_fifo_path:
+            try:
+                os.unlink(self._osc133_fifo_path)
+            except OSError:
+                pass
+            self._osc133_fifo_path = ""
+        self._settings.disconnect(self.apply_settings)
         if self._pid > 0:
             try:
                 pgrp = self._get_foreground_pgrp()
@@ -626,6 +648,24 @@ fi
         except (OSError, PermissionError):
             return False
 
+    def _is_echo_on(self):
+        if self._pty_fd < 0:
+            return True
+        try:
+            attr = termios.tcgetattr(self._pty_fd)
+            return bool(attr[3] & termios.ECHO)
+        except (termios.error, OSError):
+            return True
+
+    def _is_canonical_mode(self):
+        if self._pty_fd < 0:
+            return True
+        try:
+            attr = termios.tcgetattr(self._pty_fd)
+            return bool(attr[3] & termios.ICANON)
+        except (termios.error, OSError):
+            return True
+
     def get_osc133_stats(self):
         """Return formatted stats from OSC shell integration, or empty string."""
         raw = self._osc133_stats
@@ -680,7 +720,8 @@ fi
 
     def feed_command_bytes(self, data: bytes):
         self._vte.feed_child(data)
-        if self._settings.get("broadcast_input", False):
+        broadcast = getattr(self, '_cached_broadcast_input', False) or self._settings.get("broadcast_input", False)
+        if broadcast:
             self._broadcast_to_others(data)
 
     def _broadcast_to_others(self, data_bytes):
@@ -737,13 +778,14 @@ fi
     def _process_osc133_line(self, line):
         if not line:
             return
-        # The FIFO notification races ahead of the matching OSC bytes traveling
-        # through the pty into VTE's own parser, so an immediate cursor-position
-        # read lands on the previous line. A short delay lets VTE catch up.
-        def _run():
-            self._osc133_handle_event(line)
-            return False
-        GLib.timeout_add(30, _run)
+        self._osc133_pending_line = line
+        if not self._osc133_timer_pending:
+            self._osc133_timer_pending = True
+            def _run():
+                self._osc133_timer_pending = False
+                self._osc133_handle_event(self._osc133_pending_line)
+                return False
+            GLib.timeout_add(30, _run)
 
     def _osc133_handle_event(self, line):
         if not self._pid or self._pid <= 0:
@@ -753,11 +795,6 @@ fi
             col, row = self._vte.get_cursor_position()
         except Exception:
             return
-
-        if row <= 0:
-            text = self._vte.get_text_format(Vte.Format.TEXT)
-            if not text:
-                return
 
         cmd = line[0] if line else ""
         if cmd == "C":
@@ -778,6 +815,8 @@ fi
             if row > 0:
                 self._osc133_cmd_start_row = -1
                 self._osc133_markers.append((row, "prompt", self._osc133_last_exit))
+                if len(self._osc133_markers) > 1000:
+                    self._osc133_markers = self._osc133_markers[-1000:]
                 self._update_margin_visibility()
 
         elif cmd == "S":
@@ -919,7 +958,7 @@ fi
         except (AttributeError, ValueError):
             code = status >> 8
         self._vte.feed(f"\r\n\x1b[33m[Process exited with code {code}]\x1b[0m\r\n".encode("utf-8"))
-        GLib.idle_add(self._window.close_tab_signal)
+        GLib.idle_add(lambda t=self: self._window.close_tab_signal(t))
 
     def _on_selection_changed(self, terminal):
         if self._settings.get("auto_copy_selection", True) and terminal.get_has_selection():
@@ -933,15 +972,16 @@ fi
         return "\n".join(lines)
 
     def _on_button_press(self, terminal, event):
+        if event.button != 1 and event.button != 3:
+            return False
+        ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
         if event.button == 3:
             self._show_context_menu(event)
             return True
-        if event.button == 1:
-            ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
         url = self._url_at_position(int(event.x), int(event.y))
         if not url:
             url = self._url_from_text_at(int(event.x), int(event.y))
-        if url and (ctrl or not terminal.get_has_selection()):
+        if url and ctrl:
             self._open_url(url)
             return True
         return False
@@ -974,11 +1014,14 @@ fi
 
     def _url_from_text_at(self, x, y):
         col, row = self._pixel_to_cell(x, y)
-        text = self._vte.get_text_format(Vte.Format.TEXT) or ""
-        lines = text.split("\n")
-        if row < 0 or row >= len(lines):
+        try:
+            text, _ = self._vte.get_text_range_format(
+                Vte.Format.TEXT, row, 0, row, -1)
+        except Exception:
             return None
-        line = lines[row]
+        if not text:
+            return None
+        line = text.rstrip("\n")
         for m in self._URL_RE.finditer(line):
             if m.start() <= col <= m.end():
                 url = m.group(0)
@@ -1166,6 +1209,9 @@ fi
                     f"\r\n\x1b[33mBroadcast input: {'ON' if not current else 'OFF'}\x1b[0m\r\n".encode()
                 )
                 return True
+            if key == Gdk.KEY_P or key == Gdk.KEY_p:
+                self._show_command_bar()
+                return True
 
         if ctrl and not shift:
             if key == Gdk.KEY_R or key == Gdk.KEY_r:
@@ -1197,7 +1243,7 @@ fi
                 return True
             if key == Gdk.KEY_C or key == Gdk.KEY_c:
                 shadow = self._input_shadow.strip()
-                if shadow and not self._is_tpgk_command(shadow):
+                if shadow and not self._is_tpgk_command(shadow) and self._is_echo_on() and self._settings.get("history_enabled", True):
                     self._history.add(shadow, self.get_cwd())
                 self.feed_command_bytes(b'\x03')
                 self._input_shadow = ""
@@ -1308,11 +1354,15 @@ fi
             self._autocomplete_tpgk()
             return True
 
+        if key == Gdk.KEY_slash and self._input_shadow == "" and not ctrl and not alt:
+            self._show_command_bar()
+            return True
+
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
             shadow = self._input_shadow.strip()
             if shadow:
-                # Fix #6: record the shell's cwd, not the tpgk process cwd
-                self._history.add(shadow, self.get_cwd())
+                if self._is_echo_on() and self._settings.get("history_enabled", True):
+                    self._history.add(shadow, self.get_cwd())
                 # Fix #2: clear bash readline buffer before handling a TPGK command,
                 # because regular chars already landed in bash's readline buffer
                 if self._is_tpgk_command(shadow):
@@ -1359,7 +1409,13 @@ fi
                     return True
                 elif shadow.startswith("/history"):
                     parts = shadow.split(None, 1)
-                    self._cmd_history(parts[1] if len(parts) > 1 else "")
+                    args = parts[1] if len(parts) > 1 else ""
+                    if args.strip().lower() == "clear":
+                        self._history.clear()
+                        self._vte.feed(b"\r\n\x1b[32mHistory cleared.\x1b[0m\r\n")
+                        self._vte.feed_child(b'\r')
+                    else:
+                        self._cmd_history(args)
                     self._input_shadow = ""
                     return True
                 elif shadow.startswith("/wnotes"):
@@ -1392,7 +1448,7 @@ fi
             self._input_shadow = ""
 
         if key == Gdk.KEY_BackSpace:
-            bs = self._settings.get("backspace_binding", "ascii-del")
+            bs = getattr(self, '_cached_backspace_binding', None) or self._settings.get("backspace_binding", "ascii-del")
             if bs == "control-h":
                 self.feed_command_bytes(b'\x08')
             elif bs == "escape-sequence":
@@ -1404,7 +1460,7 @@ fi
             return True
 
         if key == Gdk.KEY_Delete:
-            dl = self._settings.get("delete_binding", "escape-sequence")
+            dl = getattr(self, '_cached_delete_binding', None) or self._settings.get("delete_binding", "escape-sequence")
             if dl == "ascii-del":
                 self.feed_command_bytes(b'\x7f')
             elif dl == "control-h":
@@ -1416,7 +1472,8 @@ fi
         text = event.string
         if text and len(text) == 1:
             if ord(text[0]) >= 0x20 or key == Gdk.KEY_Tab:
-                self._input_shadow += text if key != Gdk.KEY_Tab else "\t"
+                if self._is_canonical_mode():
+                    self._input_shadow += text if key != Gdk.KEY_Tab else "\t"
 
         return False
 
@@ -1425,9 +1482,6 @@ fi
         if not title:
             return
         self._window.set_tab_title_from_terminal(self, title)
-
-    def _on_contents_changed(self, terminal):
-        pass
 
     def _show_command_bar(self):
         if self._cmd_bar_visible:
@@ -1586,7 +1640,12 @@ fi
             self._start_ai("")
         elif shadow.startswith("/history"):
             parts = shadow.split(None, 1)
-            self._cmd_history(parts[1] if len(parts) > 1 else "")
+            args = parts[1] if len(parts) > 1 else ""
+            if args.strip().lower() == "clear":
+                self._history.clear()
+                self._vte.feed(b"\r\n\x1b[32mHistory cleared.\x1b[0m\r\n")
+            else:
+                self._cmd_history(args)
         elif shadow.startswith("/wnotes"):
             args = shadow.split(None, 1)[1] if " " in shadow else ""
             self._cmd_wnotes(args)
@@ -1893,10 +1952,15 @@ fi
         out = "\x1b[36m─── History ───\x1b[0m\r\n"
         for i in range(page_start, page_end):
             row = results[i]
-            if len(row) >= 4:
+            if len(row) >= 4 and not self._history_sql_mode:
                 _, cmd, _, ts = row
                 time_str = ts[-8:] if ts else ""
                 display = str(cmd)[:100] + ("..." if len(str(cmd)) > 100 else "")
+            elif self._history_sql_mode:
+                display = " | ".join(str(v) for v in row)[:150]
+                if len(" | ".join(str(v) for v in row)) > 150:
+                    display += "..."
+                time_str = ""
             else:
                 cmd = str(tuple(row))
                 time_str = ""
@@ -1951,12 +2015,15 @@ fi
             self._history_sql_mode = True
             try:
                 self._history_list_results = self._history.sql_search(sql)
-            except ValueError as e:
+            except (ValueError, sqlite3.Error) as e:
                 self._vte.feed(f"\033[2J\033[H\x1b[31mSQL Error: {e}\x1b[0m\r\n\x1b[90mPress Esc to exit.\x1b[0m\r\n".encode())
                 self._history_list_results = []
         else:
             self._history_list_results = self._history.search(self._history_search_query, 50)
-        self._history_search_results = [(cmd,) for _, cmd, _, _ in self._history_list_results] if self._history_list_results else []
+            self._history_search_results = [(cmd,) for _, cmd, _, _ in self._history_list_results] if self._history_list_results else []
+            self._show_history_list()
+            return
+        self._history_search_results = []
         self._show_history_list()
 
     def _cmd_wnotes(self, args=""):
@@ -2005,12 +2072,15 @@ fi
         threading.Thread(target=self._compute_provider_list_thread, daemon=True).start()
 
     def _compute_provider_list_thread(self):
+        gen = self._async_generation
         keys = self._settings.get("ai_keys", {})
         models = self._settings.get("ai_models", {})
         urls = self._settings.get("ai_urls", {})
         available = []
 
         for provider in ["openai", "claude", "gemini", "deepseek", "ollama", "custom"]:
+            if gen != self._async_generation:
+                return
             info = AIClient.PROVIDERS[provider]
             if provider in ("ollama", "custom"):
                 url = urls.get(provider, "") or info["url"]
@@ -2028,7 +2098,7 @@ fi
                     label = f"{info['name']} ({model})"
                     available.append((provider, label, info, []))
 
-        GLib.idle_add(lambda: self._on_provider_list_ready(available))
+        GLib.idle_add(lambda g=gen: self._on_provider_list_ready(available) if self._async_generation == g else None)
 
     def _on_provider_list_ready(self, available):
         self._async_pending = False
@@ -2051,6 +2121,7 @@ fi
 
     def _cancel_async_wait(self):
         self._async_pending = False
+        self._async_generation += 1
         self._provider_list = []
         self._model_list = []
         self._history_show_results = []
@@ -2083,15 +2154,18 @@ fi
 
         self._vte.feed(f"\r\n\x1b[90mConnecting to {info['name']}...\x1b[0m\r\n".encode())
         self._async_pending = True
+        gen = self._async_generation
         threading.Thread(
             target=self._fetch_models_thread,
-            args=(provider, key, model, base_url),
+            args=(provider, key, model, base_url, gen),
             daemon=True,
         ).start()
 
-    def _fetch_models_thread(self, provider, key, model, base_url):
+    def _fetch_models_thread(self, provider, key, model, base_url, gen):
+        if gen != self._async_generation:
+            return
         models = AIClient.fetch_models(provider, key, base_url)
-        GLib.idle_add(lambda: self._on_models_fetched(provider, key, model, base_url, models))
+        GLib.idle_add(lambda g=gen: self._on_models_fetched(provider, key, model, base_url, models) if self._async_generation == g else None)
 
     def _on_models_fetched(self, provider, key, model, base_url, models):
         self._async_pending = False
@@ -2122,16 +2196,16 @@ fi
     def _do_connect(self, provider, api_key, model, base_url, feed_prompt=False):
         try:
             self._ai_client = AIClient(provider, api_key, model if model else None, base_url)
-            self._settings.set("ai_last_provider", provider)
-            self._settings.set("ai_provider", provider)
+            updates = {"ai_last_provider": provider, "ai_provider": provider}
             if model:
                 models = self._settings.get("ai_models", {})
                 models[provider] = model
-                self._settings.set("ai_models", models)
+                updates["ai_models"] = models
             if base_url:
                 urls = self._settings.get("ai_urls", {})
                 urls[provider] = base_url
-                self._settings.set("ai_urls", urls)
+                updates["ai_urls"] = urls
+            self._settings.set_many(updates)
             info = AIClient.PROVIDERS[provider]
             self._vte.feed(
                 f"\r\n\x1b[32m✓ Connected to {info['name']} ({self._ai_client.model})\x1b[0m\r\n".encode()
@@ -2219,63 +2293,31 @@ fi
 
         query = self._search_entry.get_text()
         if not query or len(query) < 2:
-            self._search_label.set_text("")
+            self._search_label.set_text("type at least 2 characters")
             return
-
-        text = self._vte.get_text_format(Vte.Format.TEXT) or ""
-        lines = text.split("\n")
 
         use_regex = self._search_regex_btn.get_active()
         case_sensitive = self._search_case_btn.get_active()
 
-        for row_num, line in enumerate(lines):
-            if use_regex:
-                try:
-                    if case_sensitive:
-                        rc = re.compile(query)
-                    else:
-                        rc = re.compile(query, re.IGNORECASE)
-                except re.error:
-                    self._search_label.set_text("Invalid regex")
-                    return
-                if rc.search(line):
-                    self._search_results.append((row_num, line))
-            else:
-                if case_sensitive:
-                    found = query in line
-                else:
-                    found = query.lower() in line.lower()
-                if found:
-                    self._search_results.append((row_num, line))
+        search_query = query
+        if not use_regex:
+            search_query = re.escape(query)
+        if not case_sensitive:
+            search_query = "(?i)" + search_query
 
-        if self._search_results:
-            self._search_index = 0
-            self._search_label.set_text(f"1/{len(self._search_results)}")
-            self._scroll_to_search_result(0)
-        else:
-            self._search_label.set_text(f"No matches")
-
-    def _scroll_to_search_result(self, index):
-        if not self._search_results or index < 0 or index >= len(self._search_results):
-            return
-        row = self._search_results[index][0]
-        vadj = self._scroll.get_vadjustment()
-        if vadj:
-            vadj.set_value(row)
-        self._highlight_search_result(row)
-
-    def _highlight_search_result(self, row):
-        self._clear_search_highlights()
         try:
-            tag = self._vte.match_add_regex(
-                Vte.Regex.new_for_match(
-                    re.escape(self._search_entry.get_text()),
-                    -1, Vte.REGEX_FLAGS_DEFAULT | 0x400),
-                0)
-            self._search_tags.append(tag)
-            self._vte.match_set_cursor_name(tag, "text")
+            vte_regex = Vte.Regex.new_for_match(search_query, -1, Vte.REGEX_FLAGS_DEFAULT)
         except Exception:
-            pass
+            self._search_label.set_text("Invalid regex")
+            return
+
+        self._vte.search_set_regex(vte_regex, Vte.REGEX_FLAGS_DEFAULT)
+        self._vte.search_set_wrap_around(True)
+        found = self._vte.search_find_next()
+        if found:
+            self._search_label.set_text("Match")
+        else:
+            self._search_label.set_text("No matches")
 
     def _clear_search_highlights(self):
         for tag in self._search_tags:
@@ -2284,6 +2326,10 @@ fi
             except Exception:
                 pass
         self._search_tags = []
+        try:
+            self._vte.search_set_regex(None, Vte.REGEX_FLAGS_DEFAULT)
+        except Exception:
+            pass
 
     def _on_search_key(self, entry, event):
         key = event.keyval
@@ -2295,24 +2341,17 @@ fi
             return True
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
             if shift:
-                self._navigate_search(-1)
+                self._vte.search_find_previous()
             else:
-                self._navigate_search(1)
+                self._vte.search_find_next()
             return True
         if key == Gdk.KEY_Up:
-            self._navigate_search(-1)
+            self._vte.search_find_previous()
             return True
         if key == Gdk.KEY_Down:
-            self._navigate_search(1)
+            self._vte.search_find_next()
             return True
         return False
-
-    def _navigate_search(self, delta):
-        if not self._search_results:
-            return
-        self._search_index = (self._search_index + delta) % len(self._search_results)
-        self._scroll_to_search_result(self._search_index)
-        self._search_label.set_text(f"{self._search_index + 1}/{len(self._search_results)}")
 
     def _set_quickmark(self):
         try:

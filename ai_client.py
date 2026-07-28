@@ -208,8 +208,7 @@ class AIClient:
         url = self.base_url.replace("{model}", self.model)
         # Use non-streaming endpoint for the non-streaming variant
         url = url.replace(":streamGenerateContent", ":generateContent")
-        headers = {"Content-Type": "application/json"}
-        params = {"key": self.api_key}
+        headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
         contents = []
         for m in self._messages:
             contents.append({
@@ -219,7 +218,7 @@ class AIClient:
         payload = {"contents": contents, "generationConfig": {
             "temperature": 0.7, "maxOutputTokens": 8192,
         }}
-        resp = requests.post(url, headers=headers, params=params, json=payload, timeout=120)
+        resp = requests.post(url, headers=headers, json=payload, timeout=120)
         resp.raise_for_status()
         data = resp.json()
         content = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -232,8 +231,8 @@ class AIClient:
         url = self.base_url.replace("{model}", self.model)
         if ":streamGenerateContent" not in url:
             url = url.replace(":generateContent", ":streamGenerateContent")
-        headers = {"Content-Type": "application/json"}
-        params = {"key": self.api_key, "alt": "sse"}
+        headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
+        params = {"alt": "sse"}
         contents = []
         for m in self._messages:
             contents.append({

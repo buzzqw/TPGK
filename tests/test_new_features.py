@@ -1044,7 +1044,7 @@ class TestWindowPadding:
 class TestIncrementalSearch:
 
     def test_search_overlay_attribute(self):
-        assert '_search_overlay' in SOURCE
+        assert '_search_revealer' in SOURCE
 
     def test_show_search_method(self):
         assert '_show_search' in METHODS
@@ -1062,7 +1062,7 @@ class TestIncrementalSearch:
         assert '_on_search_key' in METHODS
 
     def test_navigate_search_method(self):
-        assert '_navigate_search' in METHODS
+        assert '_do_search' in METHODS
 
     def test_search_revealer_initialized(self):
         assert '_search_revealer' in SOURCE

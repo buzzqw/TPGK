@@ -1,0 +1,5 @@
+pytest
+ruff
+responses
+requests
+psutil

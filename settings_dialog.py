@@ -763,6 +763,7 @@ class SettingsDialog(Gtk.Dialog):
             return
 
         s = self._settings
+        s.begin_batch()
 
         s.set("tab_title", self._entry_title.get_text())
         dyn_map = {0: "replace", 1: "before", 2: "after", 3: "hide"}
@@ -815,11 +816,9 @@ class SettingsDialog(Gtk.Dialog):
         s.set("session_restore", self._chk_session_restore.get_active())
         s.set("bell_notification", self._chk_bell_notify.get_active())
 
-        # Fix #9: only persist custom_palette when it actually differs from the selected scheme's
-        # preset — otherwise switching schemes in future sessions would have no effect
         palette = {key: btn._hex for key, btn in self._palette_btns.items()}
-        scheme = self._combo_scheme.get_active_text() or "Dark (Default)"
-        preset = COLOR_PALETTES.get(scheme, COLOR_PALETTES["Dark (Default)"])
+        scheme_name = self._combo_scheme.get_active_text() or "Dark (Default)"
+        preset = COLOR_PALETTES.get(scheme_name, COLOR_PALETTES["Dark (Default)"])
         if palette != preset:
             s.set("custom_palette", palette)
         else:
@@ -863,15 +862,8 @@ class SettingsDialog(Gtk.Dialog):
         s.set("notes_file", self._entry_notes_file.get_text())
         s.set("editor_command", self._entry_editor.get_text())
 
+        s.end_batch()
         s.notify_changed()
-
-        dialog = Gtk.MessageDialog(
-            self, Gtk.DialogFlags.MODAL, Gtk.MessageType.INFO,
-            Gtk.ButtonsType.OK,
-            "Settings saved.\nChanges applied immediately."
-        )
-        dialog.run()
-        dialog.destroy()
 
         if osc133_now_enabled and not osc133_was_enabled:
             _write_osc_setup_script()

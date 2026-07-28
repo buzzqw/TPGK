@@ -1,11 +1,17 @@
 import os
 import json
+import tempfile
 
 PROFILE_DIR = os.path.join(os.path.expanduser("~"), ".config", "tpgk", "profiles")
 
 
-def profile_path(name):
+def _ensure_dir():
     os.makedirs(PROFILE_DIR, exist_ok=True)
+    os.chmod(PROFILE_DIR, 0o700)
+
+
+def profile_path(name):
+    _ensure_dir()
     return os.path.join(PROFILE_DIR, f"{name}.json")
 
 
@@ -32,9 +38,21 @@ def save_profile(name, settings_data):
                 "undercurl_style"):
         if key in settings_data:
             to_save[key] = settings_data[key]
+    _ensure_dir()
+    path = profile_path(name)
     try:
-        with open(profile_path(name), "w") as f:
-            json.dump(to_save, f, indent=2)
+        fd, tmp = tempfile.mkstemp(dir=PROFILE_DIR, prefix=".profile_tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(to_save, f, indent=2)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except OSError:
         pass
 
@@ -44,6 +62,7 @@ def load_profile(name):
     if not os.path.exists(p):
         return None
     try:
+        os.chmod(p, 0o600)
         with open(p) as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):

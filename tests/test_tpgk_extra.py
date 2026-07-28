@@ -247,28 +247,28 @@ class TestHistoryExclusionAndSQL:
         assert r[0][1] == "/cmd_skip"
 
     def test_sql_search_forbidden_insert(self, hm):
-        with pytest.raises(ValueError, match="INSERT"):
+        with pytest.raises(ValueError, match="Only SELECT and EXPLAIN"):
             hm.sql_search("INSERT INTO commands VALUES (1, 'x', '', 0, '')")
 
     def test_sql_search_forbidden_delete(self, hm):
-        with pytest.raises(ValueError, match="DELETE"):
+        with pytest.raises(ValueError, match="Only SELECT and EXPLAIN"):
             hm.sql_search("DELETE FROM commands")
 
     def test_sql_search_forbidden_drop(self, hm):
-        with pytest.raises(ValueError, match="DROP"):
+        with pytest.raises(ValueError, match="Only SELECT and EXPLAIN"):
             hm.sql_search("DROP TABLE commands")
 
     def test_sql_search_forbidden_update(self, hm):
-        with pytest.raises(ValueError, match="UPDATE"):
+        with pytest.raises(ValueError, match="Only SELECT and EXPLAIN"):
             hm.sql_search("UPDATE commands SET command='x'")
 
     def test_sql_search_non_select_raises(self, hm):
-        with pytest.raises(ValueError, match="Forbidden"):
+        with pytest.raises(ValueError, match="Only SELECT and EXPLAIN"):
             hm.sql_search("CREATE TABLE x (a int)")
 
-    def test_sql_search_accepts_pragma(self, hm):
-        r = hm.sql_search("PRAGMA table_info(commands)")
-        assert len(r) >= 1
+    def test_sql_search_pragma_raises(self, hm):
+        with pytest.raises(ValueError, match="Only SELECT and EXPLAIN"):
+            hm.sql_search("PRAGMA table_info(commands)")
 
 
 # ── AI Client: edge cases ───────────────────────────────────────

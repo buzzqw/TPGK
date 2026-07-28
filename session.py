@@ -1,12 +1,18 @@
 import os
 import json
 import time
+import tempfile
 
 SESSION_DIR = os.path.join(os.path.expanduser("~"), ".config", "tpgk", "sessions")
 
 
-def session_path(name="last"):
+def _ensure_dir():
     os.makedirs(SESSION_DIR, exist_ok=True)
+    os.chmod(SESSION_DIR, 0o700)
+
+
+def session_path(name="last"):
+    _ensure_dir()
     return os.path.join(SESSION_DIR, f"{name}.json")
 
 
@@ -23,9 +29,21 @@ def save_state(window, name="last"):
             title = window._tab_base_titles.get(page, window._get_tab_text(page))
             cwd = page.get_cwd() if page else os.path.expanduser("~")
             data[key].append({"title": title, "cwd": cwd})
+    _ensure_dir()
+    path = session_path(name)
     try:
-        with open(session_path(name), "w") as f:
-            json.dump(data, f, indent=2)
+        fd, tmp = tempfile.mkstemp(dir=SESSION_DIR, prefix=".session_tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except OSError:
         pass
 

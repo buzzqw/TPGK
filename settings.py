@@ -1,5 +1,6 @@
 import os
 import json
+import tempfile
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "tpgk")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "settings.json")
@@ -68,6 +69,7 @@ DEFAULTS = {
     "broadcast_input": False,
     "active_profile": "",
     "session_restore": True,
+    "history_enabled": True,
 }
 
 COLOR_SCHEMES = {
@@ -182,6 +184,7 @@ class Settings:
             cls._instance = super().__new__(cls)
             cls._instance._data = dict(DEFAULTS)
             cls._instance._callbacks = []
+            cls._instance._batch = False
         return cls._instance
 
     def connect(self, callback):
@@ -225,7 +228,8 @@ class Settings:
         self._loaded = True
 
     def save(self):
-        import tempfile
+        if self._batch:
+            return
         os.makedirs(CONFIG_DIR, exist_ok=True)
         os.chmod(CONFIG_DIR, 0o700)
         # Fix #15: atomic write — a crash mid-write cannot corrupt the existing config
@@ -248,6 +252,20 @@ class Settings:
 
     def set(self, key, value):
         self._data[key] = value
+        if not self._batch:
+            self.save()
+
+    def set_many(self, updates: dict):
+        for key, value in updates.items():
+            self._data[key] = value
+        if not self._batch:
+            self.save()
+
+    def begin_batch(self):
+        self._batch = True
+
+    def end_batch(self):
+        self._batch = False
         self.save()
 
     def __getitem__(self, key):
@@ -255,7 +273,8 @@ class Settings:
 
     def __setitem__(self, key, value):
         self._data[key] = value
-        self.save()
+        if not self._batch:
+            self.save()
 
     def get_color_scheme(self):
         self._ensure_loaded()

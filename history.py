@@ -20,8 +20,13 @@ class HistoryManager:
         if self._initialized:
             return
         os.makedirs(HISTORY_DIR, exist_ok=True)
+        os.chmod(HISTORY_DIR, 0o700)
         self._inserts_since_trim = 0
         self._conn = sqlite3.connect(HISTORY_DB, check_same_thread=False)
+        try:
+            os.chmod(HISTORY_DB, 0o600)
+        except OSError:
+            pass
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS commands ("
@@ -96,14 +101,19 @@ class HistoryManager:
     def sql_search(self, sql: str):
         sql_stripped = sql.strip()
         sql_upper = sql_stripped.upper()
-        forbidden = {'DROP', 'DELETE', 'INSERT', 'UPDATE', 'ALTER', 'CREATE', 'ATTACH'}
-        tokens = set(sql_upper.replace(';', ' ').replace('(', ' ').replace(')', ' ').split())
-        hit = tokens & forbidden
-        if hit:
-            raise ValueError(f"Forbidden operation: {hit}")
-        if not any(sql_upper.startswith(kw) for kw in ('SELECT', 'PRAGMA', 'EXPLAIN')):
-            raise ValueError("Only SELECT, PRAGMA, and EXPLAIN queries are supported")
-        return self._conn.execute(sql_stripped).fetchall()
+        if not any(sql_upper.startswith(kw) for kw in ('SELECT', 'EXPLAIN')):
+            raise ValueError("Only SELECT and EXPLAIN queries are supported")
+
+        ro_conn = sqlite3.connect(f"file:{HISTORY_DB}?mode=ro", uri=True)
+        try:
+            ro_conn.set_progress_handler(lambda: 2_000_000, 10000)
+            cur = ro_conn.execute(sql_stripped)
+            rows = cur.fetchall()
+            if len(rows) > 1000:
+                rows = rows[:1000]
+            return rows
+        finally:
+            ro_conn.close()
 
     def interactive_search(self, query: str, limit: int = 100):
         if not query.strip():
