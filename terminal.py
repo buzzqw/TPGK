@@ -1468,8 +1468,7 @@ fi
         text = event.string
         if text and len(text) == 1:
             if ord(text[0]) >= 0x20 or key == Gdk.KEY_Tab:
-                if self._is_canonical_mode():
-                    self._input_shadow += text if key != Gdk.KEY_Tab else "\t"
+                self._input_shadow += text if key != Gdk.KEY_Tab else "\t"
 
         return False
 
