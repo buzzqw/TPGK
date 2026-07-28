@@ -178,6 +178,7 @@ class TerminalBox(Gtk.Box):
         self._vte.set_allow_hyperlink(True)
 
         self._input_shadow = ""
+        self._shadow_anchor = None
         self._ai_mode = False
         self._ai_client = None
         self._ai_input = ""
@@ -217,6 +218,8 @@ class TerminalBox(Gtk.Box):
         self._osc133_last_exit = 0
         self._osc133_cmd_start_row = -1
         self._osc133_timer_pending = False
+        self._osc133_pending_lines = []
+        self._osc133_integration_active = False
 
         self._search_results = []
         self._search_index = 0
@@ -471,11 +474,10 @@ __tpgk_osc133_preexec() {
     [ "$__TPGK_OSC133_READY" = "1" ] || return
     case "$BASH_COMMAND" in
         __tpgk_osc133_*) return ;;
-        "$PROMPT_COMMAND") return ;;
     esac
     __TPGK_OSC133_READY=0
     printf '\033]133;C\007'
-    __tpgk_osc133_notify C
+    __tpgk_osc133_notify "C${BASH_COMMAND//$'\n'/ }"
 }
 __tpgk_osc133_precmd() {
     local _exit=$?
@@ -490,10 +492,21 @@ __tpgk_osc133_precmd() {
 
 if [ -n "$BASH_VERSION" ]; then
     trap '__tpgk_osc133_preexec' DEBUG
-    if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
-        PROMPT_COMMAND="__tpgk_osc133_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+    # PROMPT_COMMAND may be an array (bash >= 5.1 - the default on distros
+    # that chain their own prompt hooks, e.g. systemd/VTE integration
+    # scripts under /etc/profile.d). Overwriting it as a plain string here
+    # silently dropped every hook but its first array element - which then
+    # also got misidentified as "the next command about to run", resetting
+    # our ready flag before the user's actual command was ever read, so
+    # command history capture never fired at all. Appending ourselves as
+    # the *last* hook instead means every earlier hook still runs first
+    # (while the ready flag is 0, so it's correctly ignored), and the flag
+    # only flips to 1 once they've all finished, right before bash reads
+    # the next real command.
+    if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
+        PROMPT_COMMAND+=(__tpgk_osc133_precmd)
     else
-        PROMPT_COMMAND="__tpgk_osc133_precmd;${PROMPT_COMMAND}"
+        PROMPT_COMMAND="${PROMPT_COMMAND}${PROMPT_COMMAND:+;}__tpgk_osc133_precmd"
     fi
     printf '\033]133;A\007'
     __tpgk_osc133_notify A
@@ -502,7 +515,7 @@ elif [ -n "$ZSH_VERSION" ]; then
     autoload -Uz add-zsh-hook
     __tpgk_zsh_preexec() {
         printf '\033]133;C\007'
-        __tpgk_osc133_notify C
+        __tpgk_osc133_notify "C${1//$'\n'/ }"
     }
     __tpgk_zsh_precmd() {
         local _exit=$?
@@ -598,27 +611,29 @@ fi
         self._vte.copy_clipboard_format(Vte.Format.TEXT)
 
     def paste(self):
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        text = clipboard.wait_for_text()
         # Fix #8: warn before pasting multi-line content
-        if self._settings.get("show_unsafe_paste_dialog", True):
-            clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
-            text = clipboard.wait_for_text()
-            if text and ("\n" in text or "\r" in text):
-                parent = self.get_toplevel()
-                dialog = Gtk.MessageDialog(
-                    parent if isinstance(parent, Gtk.Window) else None,
-                    Gtk.DialogFlags.MODAL,
-                    Gtk.MessageType.WARNING,
-                    Gtk.ButtonsType.YES_NO,
-                    "The clipboard contains multiple lines.\n"
-                    "Pasting could run commands unintentionally.\n\nPaste anyway?"
-                )
-                response = dialog.run()
-                dialog.destroy()
-                if response != Gtk.ResponseType.YES:
-                    return
+        if text and ("\n" in text or "\r" in text) and self._settings.get("show_unsafe_paste_dialog", True):
+            parent = self.get_toplevel()
+            dialog = Gtk.MessageDialog(
+                parent if isinstance(parent, Gtk.Window) else None,
+                Gtk.DialogFlags.MODAL,
+                Gtk.MessageType.WARNING,
+                Gtk.ButtonsType.YES_NO,
+                "The clipboard contains multiple lines.\n"
+                "Pasting could run commands unintentionally.\n\nPaste anyway?"
+            )
+            response = dialog.run()
+            dialog.destroy()
+            if response != Gtk.ResponseType.YES:
+                return
+        self._shadow_paste(text)
         self._vte.paste_clipboard()
 
     def paste_selection(self):
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY)
+        self._shadow_paste(clipboard.wait_for_text())
         self._vte.paste_primary()
 
     def select_all(self):
@@ -778,18 +793,32 @@ fi
     def _process_osc133_line(self, line):
         if not line:
             return
-        self._osc133_pending_line = line
+        # Fix: queue every line instead of keeping only the latest one.
+        # precmd emits D<exit>, A and S back-to-back on every prompt, all
+        # landing in the same 30ms debounce window, so keeping a single
+        # "pending line" silently dropped all but the last of them (and,
+        # once C carried the actual command text, could drop history
+        # entries for fast-finishing commands).
+        self._osc133_pending_lines.append(line)
         if not self._osc133_timer_pending:
             self._osc133_timer_pending = True
             def _run():
                 self._osc133_timer_pending = False
-                self._osc133_handle_event(self._osc133_pending_line)
+                lines, self._osc133_pending_lines = self._osc133_pending_lines, []
+                for pending in lines:
+                    self._osc133_handle_event(pending)
                 return False
             GLib.timeout_add(30, _run)
 
     def _osc133_handle_event(self, line):
         if not self._pid or self._pid <= 0:
             return
+
+        # Any event proves the shell integration script is actually loaded
+        # and running (as opposed to just enabled in settings), which is
+        # what lets us trust "C" as the ground truth for command history
+        # instead of guessing from mirrored keystrokes.
+        self._osc133_integration_active = True
 
         try:
             col, row = self._vte.get_cursor_position()
@@ -801,6 +830,11 @@ fi
             self._osc133_cmd_start_row = row
             self._osc133_markers.append((row, "cmd_start", 0))
             self._bell_notify_cmd_running = True
+            command_text = line[1:].strip()
+            if (command_text and not self._is_tpgk_command(command_text)
+                    and self._settings.get("history_enabled", True)):
+                self._history.add(command_text, self.get_cwd())
+                self._input_shadow = ""
 
         elif cmd == "D":
             try:
@@ -972,6 +1006,12 @@ fi
         return "\n".join(lines)
 
     def _on_button_press(self, terminal, event):
+        if event.button == 2:
+            # Middle-click paste is normally handled entirely inside VTE's
+            # default handler, bypassing our code (and _input_shadow) as a
+            # result. Do it ourselves so the pasted text lands in history.
+            self.paste_selection()
+            return True
         if event.button != 1 and event.button != 3:
             return False
         ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
@@ -1146,12 +1186,76 @@ fi
     def _is_tpgk_command(self, shadow: str) -> bool:
         return shadow.startswith(_TPGK_PREFIXES)
 
+    def _shadow_paste(self, text):
+        # Pasted text (clipboard or primary selection) goes straight to the
+        # pty via VTE and never passes through _on_key_press, so without this
+        # the shadow buffer silently diverges from what was actually typed
+        # and history records a mangled command (e.g. a pasted port number
+        # missing from "ssh -p <pasted> host").
+        if not text:
+            return
+        if not self._input_shadow and self._shadow_anchor is None:
+            # Paste can be the very first action on a fresh line (e.g.
+            # middle-click before typing anything), which never touches
+            # _on_key_press, so the anchor capture there never ran.
+            try:
+                self._shadow_anchor = self._vte.get_cursor_position()
+            except Exception:
+                self._shadow_anchor = None
+        normalized = text.replace('\r\n', '\n').replace('\r', '\n')
+        lines = normalized.split('\n')
+        self._input_shadow += lines[0]
+        if len(lines) > 1:
+            for line in [self._input_shadow] + lines[1:-1]:
+                cmd = line.strip()
+                if cmd and not self._is_tpgk_command(cmd) and self._settings.get("history_enabled", True):
+                    self._history.add(cmd, self.get_cwd())
+            self._input_shadow = lines[-1]
+
+    def _get_real_command_text(self):
+        # Reads the command line straight off the terminal screen, from the
+        # cursor position captured right after the shell's prompt up to
+        # where the cursor is now, instead of trusting the keystroke-mirrored
+        # _input_shadow. This is what makes history correct even without
+        # OSC 133 shell integration: it reflects whatever the shell's own
+        # line editor put there, including Up/Down history recall, native
+        # tab completion, or mid-line edits with the arrow keys - none of
+        # which _input_shadow can see since they don't append plain text.
+        if self._shadow_anchor is None:
+            return self._input_shadow.strip()
+        try:
+            start_col, start_row = self._shadow_anchor
+            end_col, end_row = self._vte.get_cursor_position()
+            text, _ = self._vte.get_text_range_format(
+                Vte.Format.TEXT, start_row, start_col, end_row, end_col)
+        except Exception:
+            return self._input_shadow.strip()
+        if not text:
+            return self._input_shadow.strip()
+        return text.strip()
+
     def _on_key_press(self, terminal, event):
         state = event.state
         ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
         shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
         alt = bool(state & Gdk.ModifierType.MOD1_MASK)
         key = event.keyval
+
+        if (not self._input_shadow and self._shadow_anchor is None
+                and not self._ai_mode and not self._cmd_bar_visible
+                and not self._history_search_mode and not self._async_pending
+                and not self._provider_list and not self._model_list):
+            # The very first keystroke of a fresh command line (whatever it
+            # is - a printable char, an Up arrow to recall shell history, a
+            # paste) finds the cursor sitting right after the shell's own
+            # prompt. Anchoring on it here lets _get_real_command_text() read
+            # the actual rendered line at Enter time instead of relying
+            # solely on mirrored keystrokes, which miss anything the shell's
+            # own line editor does on its own (history recall, completion).
+            try:
+                self._shadow_anchor = self._vte.get_cursor_position()
+            except Exception:
+                self._shadow_anchor = None
 
         if ctrl and shift:
             if key == Gdk.KEY_C or key == Gdk.KEY_c:
@@ -1242,11 +1346,12 @@ fi
                 self._input_shadow = parts[0] if len(parts) > 1 else ""
                 return True
             if key == Gdk.KEY_C or key == Gdk.KEY_c:
-                shadow = self._input_shadow.strip()
-                if shadow and not self._is_tpgk_command(shadow) and self._settings.get("history_enabled", True):
-                    self._history.add(shadow, self.get_cwd())
+                real_text = self._get_real_command_text()
+                if real_text and not self._is_tpgk_command(real_text) and self._settings.get("history_enabled", True):
+                    self._history.add(real_text, self.get_cwd())
                 self.feed_command_bytes(b'\x03')
                 self._input_shadow = ""
+                self._shadow_anchor = None
                 self._ai_mode = False
                 self._ai_generation += 1
                 self._ai_busy = False
@@ -1318,7 +1423,14 @@ fi
         if self._async_pending:
             if key == Gdk.KEY_Escape:
                 self._cancel_async_wait()
-            return True
+                return True
+            # Any other key means the user has moved on to typing something
+            # else. Silently drop the pending AI check instead of eating the
+            # keystroke (previously every character typed while a /connect
+            # check was still in flight was discarded with no feedback,
+            # corrupting whatever command the user typed next).
+            self._async_generation += 1
+            self._async_pending = False
 
         if self._provider_list or self._model_list or self._history_show_results:
             text = event.string
@@ -1344,11 +1456,12 @@ fi
                         return True
                     self._input_shadow = ""
                     return True
+            # Not a selection digit either: the user has moved on to typing
+            # something else. Clear the pending menu but let the keystroke
+            # fall through to normal handling instead of discarding it.
             self._provider_list = []
             self._model_list = []
             self._history_show_results = []
-            self._input_shadow = ""
-            return True
 
         if key == Gdk.KEY_Tab and self._input_shadow.startswith('/'):
             self._autocomplete_tpgk()
@@ -1357,11 +1470,24 @@ fi
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
             shadow = self._input_shadow.strip()
             if shadow:
+                is_tpgk_cmd = self._is_tpgk_command(shadow)
+                # TPGK commands never reach the shell (the readline buffer
+                # gets cleared below), so OSC 133 "C" never fires for them
+                # and they must still be recorded here. Regular commands are
+                # skipped once shell integration is confirmed active: its
+                # "C" event carries the command exactly as the shell saw it
+                # (unlike this mirrored buffer, which misses anything typed
+                # outside individual keystrokes — pasted text, history
+                # recalled with the shell's own Up/Down arrows, etc.).
                 if self._settings.get("history_enabled", True):
-                    self._history.add(shadow, self.get_cwd())
+                    if is_tpgk_cmd:
+                        self._history.add(shadow, self.get_cwd())
+                    elif not self._osc133_integration_active:
+                        self._history.add(self._get_real_command_text(), self.get_cwd())
+                self._shadow_anchor = None
                 # Fix #2: clear bash readline buffer before handling a TPGK command,
                 # because regular chars already landed in bash's readline buffer
-                if self._is_tpgk_command(shadow):
+                if is_tpgk_cmd:
                     self.feed_command_bytes(b'\x15')
                 if shadow == "/ai off":
                     self._ai_mode = False
@@ -1484,9 +1610,11 @@ fi
         self._cmd_bar_visible = True
         self._cmd_bar_revealer.set_reveal_child(True)
         self._cmd_entry.set_text("/")
-        self._cmd_entry.set_position(-1)
         self._build_cmd_list("")
         self._cmd_entry.grab_focus()
+        # GTK selects the whole entry text on focus-in (gtk-entry-select-on-focus);
+        # without collapsing the selection, the first keystroke overwrites the "/".
+        self._cmd_entry.select_region(-1, -1)
 
     def _hide_command_bar(self):
         self._cmd_bar_visible = False
@@ -1520,6 +1648,7 @@ fi
                 hbox.pack_start(desc_lbl, True, True, 0)
                 row.add(hbox)
                 row.show_all()
+                row.cmd_data = cmd.split()[0]
                 self._cmd_list.add(row)
                 if first is None:
                     first = row
@@ -1527,21 +1656,12 @@ fi
             self._cmd_list.select_row(first)
 
     def _on_cmd_bar_row_activated(self, listbox, row):
-        if hasattr(row, 'cmd_data'):
-            cmd = row.cmd_data
-            self._vte.feed_child((cmd + "\n").encode("utf-8"))
-            self._history.add(cmd, self.get_cwd())
-            self._hide_command_bar()
+        if not hasattr(row, 'cmd_data'):
             return
-        children = row.get_children()
-        if children:
-            box = children[0]
-            labels = box.get_children()
-            if labels:
-                cmd_label = labels[0].get_text().strip()
-                self._cmd_entry.set_text(cmd_label + " ")
-                self._cmd_entry.set_position(-1)
-                self._cmd_entry.grab_focus()
+        cmd_label = row.cmd_data
+        self._cmd_entry.set_text(cmd_label + " ")
+        self._cmd_entry.set_position(-1)
+        self._cmd_entry.grab_focus()
 
     def _on_cmd_bar_activated(self, entry):
         self._execute_from_bar()
@@ -1562,13 +1682,9 @@ fi
             self._hide_command_bar()
             return True
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
-            sel = self._cmd_list.get_selected_row()
-            if sel and hasattr(sel, 'cmd_data'):
-                cmd = sel.cmd_data
-                self._vte.feed_child((cmd + "\n").encode("utf-8"))
-                self._history.add(cmd, self.get_cwd())
-                self._hide_command_bar()
-                return True
+            # Let the entry's own "activate" signal fire (_on_cmd_bar_activated),
+            # so whatever text is actually in the entry gets executed —
+            # not just the highlighted suggestion, in case args were typed.
             return False
         if key == Gdk.KEY_Down:
             children = self._cmd_list.get_children()
@@ -1589,16 +1705,10 @@ fi
         if key == Gdk.KEY_Tab:
             children = self._cmd_list.get_children()
             if children:
-                sel = self._cmd_list.get_selected_row()
-                if sel and hasattr(sel, 'cmd_data'):
-                    self._cmd_entry.set_text(sel.cmd_data)
+                sel = self._cmd_list.get_selected_row() or children[0]
+                if hasattr(sel, 'cmd_data'):
+                    self._cmd_entry.set_text(sel.cmd_data + " ")
                     self._cmd_entry.set_position(-1)
-                    return True
-                row = sel or children[0]
-                box = row.get_children()[0]
-                cmd_label = box.get_children()[0].get_text().strip()
-                self._cmd_entry.set_text(cmd_label + " ")
-                self._cmd_entry.set_position(-1)
             return True
         return False
 
@@ -1801,9 +1911,23 @@ fi
         self._history_list_nlines = 0
         if was_list_display:
             try:
+                # Leaving the alternate screen buffer restores the primary
+                # screen exactly as it was *at the moment 1049h was sent* -
+                # which is before bash had a chance to actually process and
+                # echo back the Ctrl+U that erased "/history ..." from the
+                # line (that echo is asynchronous, over the pty, and loses
+                # the race against feed() switching buffers immediately).
+                # So the restored screen still shows the typed command, not
+                # a bare prompt. Clearing it and asking the real shell for a
+                # fresh prompt (like every other tpgk command already does
+                # via feed_child) sidesteps the race entirely instead of
+                # trying to preserve/restore a snapshot that can't be
+                # trusted to be clean.
                 self._vte.feed(b'\033[?1049l\033[H\033[2J')
             except Exception:
                 pass
+            self._vte.feed_child(b'\r')
+        return was_list_display
 
     def _start_history_search(self):
         self._history_search_mode = True
@@ -1817,8 +1941,12 @@ fi
         text = event.string
 
         if key == Gdk.KEY_Escape or key == 0xff1b or key == 0x1b:
-            self._exit_history_search_mode()
-            self._vte.feed(b'\r\n')
+            # _exit_history_search_mode() already asks the real shell for a
+            # fresh prompt when leaving the full-screen list view; adding
+            # another \r\n here on top of that would leave a stray blank
+            # line and put the cursor past the newly-drawn prompt.
+            if not self._exit_history_search_mode():
+                self._vte.feed(b'\r\n')
             return True
 
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:

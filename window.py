@@ -1619,7 +1619,15 @@ class MainWindow(Gtk.ApplicationWindow):
     # ── Window signals ───────────────────────────────────────
 
     def _on_close(self, *a):
+        # Guard against re-entry: a second delete-event (e.g. the window
+        # manager or a fast double-click on the X sending it twice before
+        # the modal dialog below has had a chance to grab input) would
+        # otherwise re-run this from scratch and show the confirmation dialog
+        # a second time.
+        if getattr(self, "_closing", False):
+            return True
         if self._settings.get("confirm_close", True):
+            self._closing = True
             dialog = Gtk.MessageDialog(
                 self, Gtk.DialogFlags.MODAL,
                 Gtk.MessageType.QUESTION, Gtk.ButtonsType.YES_NO,
@@ -1628,6 +1636,7 @@ class MainWindow(Gtk.ApplicationWindow):
             resp = dialog.run()
             dialog.destroy()
             if resp != Gtk.ResponseType.YES:
+                self._closing = False
                 return True
 
         for nb in (self._notebook, self._notebook2):
@@ -1637,6 +1646,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._settings.disconnect(self._apply_window_size)
         self._save_session()
         self.destroy()
+        return True
 
     def _on_window_key(self, widget, event):
         state = event.state
