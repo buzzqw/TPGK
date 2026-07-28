@@ -1354,10 +1354,6 @@ fi
             self._autocomplete_tpgk()
             return True
 
-        if key == Gdk.KEY_slash and self._input_shadow == "" and not ctrl and not alt:
-            self._show_command_bar()
-            return True
-
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
             shadow = self._input_shadow.strip()
             if shadow:
@@ -2009,7 +2005,7 @@ fi
         elif query.upper().startswith(':SQL\t'):
             is_sql = True
             sql = query[5:].strip()
-        elif query.upper().startswith('SELECT') or query.upper().startswith('PRAGMA') or query.upper().startswith('EXPLAIN'):
+        elif query.upper().startswith('SELECT') or query.upper().startswith('EXPLAIN'):
             is_sql = True
         if is_sql:
             self._history_sql_mode = True
