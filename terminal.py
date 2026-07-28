@@ -1243,7 +1243,7 @@ fi
                 return True
             if key == Gdk.KEY_C or key == Gdk.KEY_c:
                 shadow = self._input_shadow.strip()
-                if shadow and not self._is_tpgk_command(shadow) and self._is_echo_on() and self._settings.get("history_enabled", True):
+                if shadow and not self._is_tpgk_command(shadow) and self._settings.get("history_enabled", True):
                     self._history.add(shadow, self.get_cwd())
                 self.feed_command_bytes(b'\x03')
                 self._input_shadow = ""
@@ -1357,7 +1357,7 @@ fi
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
             shadow = self._input_shadow.strip()
             if shadow:
-                if self._is_echo_on() and self._settings.get("history_enabled", True):
+                if self._settings.get("history_enabled", True):
                     self._history.add(shadow, self.get_cwd())
                 # Fix #2: clear bash readline buffer before handling a TPGK command,
                 # because regular chars already landed in bash's readline buffer
