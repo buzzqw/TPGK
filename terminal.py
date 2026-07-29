@@ -193,6 +193,8 @@ class TerminalBox(Gtk.Box):
         self._history_list_index = 0
         self._history_list_nlines = 0
         self._history_sql_mode = False
+        self._history_tab_mode = False
+        self._tab_fallback_generation = 0
         self._connect_provider = None
         self._connect_model = None
         self._connect_key = ""
@@ -1236,6 +1238,10 @@ fi
 
     def _on_key_press(self, terminal, event):
         state = event.state
+        # Invalidates any pending _check_tab_history_fallback callback from a
+        # previous Tab press - any further key activity means the user has
+        # moved on and a delayed history popup would now be a surprise.
+        self._tab_fallback_generation += 1
         ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
         shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
         alt = bool(state & Gdk.ModifierType.MOD1_MASK)
@@ -1467,6 +1473,19 @@ fi
             self._autocomplete_tpgk()
             return True
 
+        if key == Gdk.KEY_Tab:
+            # Let the shell's own completion run first, untouched (files,
+            # paths, git branches, ssh hosts, whatever bash knows how to
+            # complete) - that answer can depend on completion scripts we
+            # have no visibility into from here. Only if the line still
+            # looks the same shortly after (nothing matched) do we step in
+            # and offer history matches instead of leaving the user with a
+            # dead keypress.
+            if self._input_shadow.strip():
+                self._schedule_tab_history_fallback()
+            self._input_shadow += "\t"
+            return False
+
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
             shadow = self._input_shadow.strip()
             if shadow:
@@ -1592,9 +1611,8 @@ fi
             return True
 
         text = event.string
-        if text and len(text) == 1:
-            if ord(text[0]) >= 0x20 or key == Gdk.KEY_Tab:
-                self._input_shadow += text if key != Gdk.KEY_Tab else "\t"
+        if text and len(text) == 1 and ord(text[0]) >= 0x20:
+            self._input_shadow += text
 
         return False
 
@@ -1904,6 +1922,7 @@ fi
         self._history_search_mode = False
         self._history_list_display = False
         self._history_sql_mode = False
+        self._history_tab_mode = False
         self._history_search_query = ""
         self._history_search_results = []
         self._history_list_results = []
@@ -1941,18 +1960,28 @@ fi
         text = event.string
 
         if key == Gdk.KEY_Escape or key == 0xff1b or key == 0x1b:
+            # Tab-triggered browsing started from a command already being
+            # typed (not a "/history" command line) - the shell buffer was
+            # cleared to show the full-screen list, so cancelling must retype
+            # what the user had so far instead of leaving an empty prompt.
+            tab_mode = self._history_tab_mode
+            original = self._input_shadow if tab_mode else ""
             # _exit_history_search_mode() already asks the real shell for a
             # fresh prompt when leaving the full-screen list view; adding
             # another \r\n here on top of that would leave a stray blank
             # line and put the cursor past the newly-drawn prompt.
             if not self._exit_history_search_mode():
                 self._vte.feed(b'\r\n')
+            if tab_mode and original.strip():
+                self._vte.feed_child(original.encode("utf-8"))
             return True
 
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
             if self._history_list_display:
                 results = self._history_list_results
                 sel_idx = self._history_list_index
+                tab_mode = self._history_tab_mode
+                original = self._input_shadow
                 self._exit_history_search_mode()
                 if results and 0 <= sel_idx < len(results):
                     row = results[sel_idx]
@@ -1960,8 +1989,17 @@ fi
                         cmd = row[1]
                     else:
                         cmd = str(tuple(row))
-                    self._vte.feed_child((cmd + "\n").encode("utf-8"))
-                    self._history.add(cmd, self.get_cwd())
+                    if tab_mode:
+                        # Fill the line like a completion, don't run it - the
+                        # user still gets to review/edit before hitting Enter.
+                        self._input_shadow = cmd
+                        self._vte.feed_child(cmd.encode("utf-8"))
+                    else:
+                        self._vte.feed_child((cmd + "\n").encode("utf-8"))
+                        self._history.add(cmd, self.get_cwd())
+                elif tab_mode and original.strip():
+                    self._input_shadow = original
+                    self._vte.feed_child(original.encode("utf-8"))
                 else:
                     self._vte.feed(b'\r\n')
                 self._history_list_results = []
@@ -2059,10 +2097,11 @@ fi
                 out += f"\x1b[33mNo results for: {self._history_search_query}\x1b[0m\r\n"
             else:
                 out += "\x1b[33mNo history found.\x1b[0m\r\n"
+            enter_label = "fill" if self._history_tab_mode else "execute"
             if not self._history_sql_mode:
                 out += "\x1b[90mType to filter, Esc to cancel.\x1b[0m\r\n"
             else:
-                out += "\x1b[90m\u2191\u2193 select, Enter execute, Esc cancel\x1b[0m\r\n"
+                out += f"\x1b[90m\u2191\u2193 select, Enter {enter_label}, Esc cancel\x1b[0m\r\n"
             self._history_list_nlines = out.count('\n')
             self._vte.feed(f"\033[2J\033[H{out}".encode())
             return
@@ -2095,11 +2134,12 @@ fi
                 out += f"  {display}  \x1b[90m{time_str}\x1b[0m\r\n"
 
         query_disp = f"'{self._history_search_query}'" if self._history_search_query else "all"
+        enter_label = "fill" if self._history_tab_mode else "execute"
         footer = ""
         if not self._history_sql_mode:
-            footer = f"\x1b[90m─── {total} matches for {query_disp} — \u2191\u2193 select, type to filter, Enter execute, Esc cancel\x1b[0m"
+            footer = f"\x1b[90m─── {total} matches for {query_disp} — \u2191\u2193 select, type to filter, Enter {enter_label}, Esc cancel\x1b[0m"
         else:
-            footer = f"\x1b[90m─── {total} results — \u2191\u2193 select, Enter execute, Esc cancel\x1b[0m"
+            footer = f"\x1b[90m─── {total} results — \u2191\u2193 select, Enter {enter_label}, Esc cancel\x1b[0m"
         out += footer
         self._history_list_nlines = out.count('\n')
         self._vte.feed(f"\033[2J\033[H{out}".encode())
@@ -2111,6 +2151,49 @@ fi
             # Fix #11: \x1b[K is a display escape, meaningless as pty input; use \x15 to kill readline
             self._vte.feed_child(b'\x15')
             self._vte.feed_child(cmd.encode("utf-8"))
+
+    def _schedule_tab_history_fallback(self):
+        if not self._settings.get("history_enabled", True):
+            return
+        generation = self._tab_fallback_generation
+        before = self._get_real_command_text()
+        GLib.timeout_add(120, self._check_tab_history_fallback, generation, before)
+
+    def _check_tab_history_fallback(self, generation, before):
+        # generation only matches if nothing happened between the Tab press
+        # and now (no further keystroke bumped it) - anything else means the
+        # user has moved on and a popup now would be an unwelcome surprise.
+        if generation != self._tab_fallback_generation:
+            return False
+        if (self._history_search_mode or self._ai_mode or self._cmd_bar_visible
+                or self._provider_list or self._model_list or self._async_pending):
+            return False
+        if self._get_real_command_text() == before:
+            self._start_history_tab_complete()
+        return False
+
+    def _start_history_tab_complete(self):
+        query = self._input_shadow.strip()
+        self._history_tab_mode = True
+        self._history_list_display = True
+        self._history_search_mode = True
+        self._history_search_query = query
+        self._history_search_index = 0
+        self._history_list_index = 0
+        self._history_list_nlines = 0
+        self._history_sql_mode = False
+        # The line typed so far is only mirrored in _input_shadow; the real
+        # readline buffer still holds it too and must be cleared before the
+        # alt-screen list takes over, the same way /history does for its own
+        # command line.
+        self.feed_command_bytes(b'\x15')
+        self._vte.feed(b'\033[?1049h')
+        self._history_list_results = self._history.search(query, 50)
+        self._history_search_results = (
+            [(cmd,) for _, cmd, _, _ in self._history_list_results]
+            if self._history_list_results else []
+        )
+        self._show_history_list()
 
     # ── TPGK commands ──────────────────────────────────────────
 
@@ -2354,6 +2437,7 @@ fi
             "  \x1b[33m/clear\x1b[0m                 Clear the screen\r\n"
             "\r\n"
             "  \x1b[90mTab\x1b[0m                    Autocomplete /commands\r\n"
+            "  \x1b[90mTab\x1b[0m                    History picker if shell completion finds nothing\r\n"
             "  \x1b[90mCtrl+R\x1b[0m                  History search\r\n"
             "  \x1b[90mCtrl+U\x1b[0m                  Kill line\r\n"
             "  \x1b[90mCtrl+W\x1b[0m                  Kill word\r\n"

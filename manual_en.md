@@ -76,6 +76,15 @@ Special commands start with `/` and are processed by TPGK, not the shell.
 **New:** Press **Tab** while typing a command to **autocomplete**. For example,
 `/hist` + Tab → `/history`.
 
+**Tab into history:** on a regular (non-`/`) command line, **Tab** tries the shell's own
+completion first (files, folders, git branches, ssh hosts, anything bash already knows how to
+complete) — nothing changes there. Only if the line still looks the same right after (nothing
+matched) does TPGK step in, on that same keypress, with the full-screen history panel, already
+filtered by whatever you've typed so far — the same view as `/history`. Example: type
+`ssh buzzqw` (bash finds nothing to complete there) and press Tab: the panel opens, pick the
+matching command from history with the arrow keys, then press Enter to **fill the line** (it
+isn't run right away); Esc restores what you had typed.
+
 ### /history
 
 ```
