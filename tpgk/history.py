@@ -75,26 +75,44 @@ class HistoryManager:
             else:
                 pos.append(p)
         where_clauses = []
-        params = []
+        where_params = []
         if len(pos) == 1:
             escaped = self._like_escape(pos[0])
             where_clauses.append(
                 "((command LIKE ? ESCAPE '\\') OR (REPLACE(command, ' ', '') LIKE ? ESCAPE '\\'))"
             )
-            params.extend([f"%{escaped}%", f"%{escaped}%"])
+            where_params.extend([f"%{escaped}%", f"%{escaped}%"])
         elif len(pos) > 1:
             where_clauses.append(
                 "(" + " AND ".join(["command LIKE ? ESCAPE '\\'"] * len(pos)) + ")"
             )
-            params.extend([f"%{self._like_escape(p)}%" for p in pos])
+            where_params.extend([f"%{self._like_escape(p)}%" for p in pos])
         for n in neg:
             where_clauses.append("command NOT LIKE ? ESCAPE '\\'")
-            params.append(f"%{self._like_escape(n)}%")
+            where_params.append(f"%{self._like_escape(n)}%")
         where_clauses.append("command NOT LIKE '/%' ESCAPE '\\'")
         where = " AND ".join(where_clauses)
-        params.append(limit)
+
+        first_term = pos[0]
+        order_parts = [
+            f"CASE WHEN command LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END",
+        ]
+        order_params = [f"{self._like_escape(first_term)}%"]
+
+        if len(pos) > 1:
+            instr_sum = " + ".join([f"INSTR(LOWER(command), ?)" for _ in pos])
+            order_parts.append(f"({instr_sum})")
+            order_params.extend(t.lower() for t in pos)
+
+        order_parts += [
+            "LENGTH(command)",
+            "id DESC",
+        ]
+        order_clause = ", ".join(order_parts)
+
+        params = where_params + order_params + [limit]
         return self._conn.execute(
-            f"SELECT id, command, cwd, timestamp FROM commands WHERE {where} ORDER BY id DESC LIMIT ?",
+            f"SELECT id, command, cwd, timestamp FROM commands WHERE {where} ORDER BY {order_clause} LIMIT ?",
             params,
         ).fetchall()
 
@@ -123,14 +141,32 @@ class HistoryManager:
             ).fetchall()
         parts = query.strip().split()
         where = " AND ".join(["command LIKE ? ESCAPE '\\'"] * len(parts))
-        params = [f"%{self._like_escape(p)}%" for p in parts] + [limit]
+        where_params = [f"%{self._like_escape(p)}%" for p in parts]
+
+        first_term = parts[0]
+        order_parts = [
+            f"CASE WHEN command LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END",
+        ]
+        order_params = [f"{self._like_escape(first_term)}%"]
+
+        if len(parts) > 1:
+            instr_sum = " + ".join([f"INSTR(LOWER(command), ?)" for _ in parts])
+            order_parts.append(f"({instr_sum})")
+            order_params.extend(t.lower() for t in parts)
+
+        order_parts += [
+            "LENGTH(command)",
+            "max_id DESC",
+        ]
+        order_clause = ", ".join(order_parts)
+
+        params = where_params + [limit, limit] + order_params
         # Fix #16: outer ORDER BY — SQLite does not guarantee subquery ordering survives.
-        # GROUP BY already deduplicates, so DISTINCT is redundant; outer SELECT can use max_id.
         return self._conn.execute(
             "SELECT command FROM ("
             f"SELECT command, MAX(id) as max_id FROM commands WHERE {where} "
             "GROUP BY command LIMIT ?) "
-            "ORDER BY max_id DESC",
+            f"ORDER BY {order_clause} LIMIT ?",
             params,
         ).fetchall()
 

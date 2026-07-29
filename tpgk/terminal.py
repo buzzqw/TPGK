@@ -1946,6 +1946,7 @@ fi
         self._history_list_results = []
         self._history_list_index = 0
         self._history_list_nlines = 0
+        self._input_shadow = ""
         if was_list_display:
             try:
                 # Leaving the alternate screen buffer restores the primary
@@ -2023,7 +2024,7 @@ fi
                 self._history_list_results = []
                 self._history_list_index = 0
                 self._history_list_nlines = 0
-                return
+                return True
 
             self._history_search_mode = False
             if self._history_search_results and self._history_search_index >= 0:
@@ -2034,20 +2035,20 @@ fi
                 self._vte.feed(b'\r\n')
             self._history_search_query = ""
             self._history_search_results = []
-            return
+            return True
 
         if self._history_list_display:
             if key == Gdk.KEY_Up:
                 if self._history_list_results and self._history_list_index > 0:
                     self._history_list_index -= 1
                     self._show_history_list()
-                return
+                return True
 
             if key == Gdk.KEY_Down:
                 if self._history_list_results and self._history_list_index < len(self._history_list_results) - 1:
                     self._history_list_index += 1
                     self._show_history_list()
-                return
+                return True
 
             if key == Gdk.KEY_BackSpace:
                 if self._history_search_query:
@@ -2060,7 +2061,7 @@ fi
                 self._history_list_results = self._history.search(self._history_search_query, 50)
             self._history_search_results = [(cmd,) for _, cmd, _, _ in self._history_list_results] if self._history_list_results else []
             self._show_history_list()
-            return
+            return True
 
         if key == Gdk.KEY_Up:
             if self._history_search_results:
@@ -2069,7 +2070,7 @@ fi
                     len(self._history_search_results) - 1,
                 )
                 self._show_search_results()
-            return
+            return True
 
         if key == Gdk.KEY_Down:
             if self._history_search_results:
@@ -2079,7 +2080,7 @@ fi
                     self._vte.feed(f"\r\x1b[90m(query)> {self._history_search_query}\x1b[0m".encode())
                 else:
                     self._show_search_results()
-            return
+            return True
 
         if key == Gdk.KEY_BackSpace:
             if self._history_search_query:
@@ -2090,6 +2091,7 @@ fi
 
         self._history_search_results = self._history.interactive_search(self._history_search_query)
         self._show_search_results()
+        return True
 
     def _show_search_results(self):
         self._vte.feed(b'\r\033[K')
@@ -2174,24 +2176,24 @@ fi
         if not self._settings.get("history_enabled", True):
             return
         generation = self._tab_fallback_generation
-        before = self._get_real_command_text()
+        before = self._input_shadow.strip()
         GLib.timeout_add(120, self._check_tab_history_fallback, generation, before)
 
     def _check_tab_history_fallback(self, generation, before):
-        # generation only matches if nothing happened between the Tab press
-        # and now (no further keystroke bumped it) - anything else means the
-        # user has moved on and a popup now would be an unwelcome surprise.
         if generation != self._tab_fallback_generation:
             return False
         if (self._history_search_mode or self._ai_mode or self._cmd_bar_visible
                 or self._provider_list or self._model_list or self._async_pending):
             return False
-        if self._get_real_command_text() == before:
+        if self._input_shadow.strip() == before:
             self._start_history_tab_complete()
         return False
 
     def _start_history_tab_complete(self):
         query = self._input_shadow.strip()
+        results = self._history.search(query, 50)
+        if not results:
+            return
         self._history_tab_mode = True
         self._history_list_display = True
         self._history_search_mode = True
@@ -2200,13 +2202,9 @@ fi
         self._history_list_index = 0
         self._history_list_nlines = 0
         self._history_sql_mode = False
-        # The line typed so far is only mirrored in _input_shadow; the real
-        # readline buffer still holds it too and must be cleared before the
-        # alt-screen list takes over, the same way /history does for its own
-        # command line.
         self.feed_command_bytes(b'\x15')
         self._vte.feed(b'\033[?1049h')
-        self._history_list_results = self._history.search(query, 50)
+        self._history_list_results = results
         self._history_search_results = (
             [(cmd,) for _, cmd, _, _ in self._history_list_results]
             if self._history_list_results else []
