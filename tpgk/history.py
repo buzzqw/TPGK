@@ -45,7 +45,7 @@ class HistoryManager:
 
     def add(self, command: str, cwd: str = "", exit_code: int = -1):
         ts = datetime.datetime.now().isoformat()
-        self._conn.execute(
+        cur = self._conn.execute(
             "INSERT INTO commands (command, cwd, exit_code, timestamp) VALUES (?,?,?,?)",
             (command, cwd, exit_code, ts),
         )
@@ -54,16 +54,36 @@ class HistoryManager:
         if self._inserts_since_trim >= self.TRIM_CHECK_INTERVAL:
             self._inserts_since_trim = 0
             self._trim()
+        return cur.lastrowid
+
+    def set_exit_code(self, row_id, exit_code: int):
+        # Called once the shell reports how a command finished (OSC 133 "D").
+        # exit_code is unknown at add() time since that fires on command
+        # start, before there's anything to report.
+        if row_id is None:
+            return
+        self._conn.execute(
+            "UPDATE commands SET exit_code = ? WHERE id = ?", (exit_code, row_id)
+        )
+        self._conn.commit()
 
     @staticmethod
     def _like_escape(term: str) -> str:
         # Fix #17: escape LIKE metacharacters so literal % and _ in search terms work correctly
         return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
-    def search(self, terms: str, limit: int = 50):
+    def search(self, terms: str, limit: int = 50, cwd: str = ""):
         if not terms.strip():
+            if cwd:
+                return self._conn.execute(
+                    "SELECT MAX(id) AS id, command, cwd, timestamp FROM commands "
+                    "WHERE command NOT LIKE '/%' ESCAPE '\\' GROUP BY command "
+                    "ORDER BY CASE WHEN cwd = ? THEN 0 ELSE 1 END, id DESC LIMIT ?",
+                    (cwd, limit),
+                ).fetchall()
             return self._conn.execute(
-                "SELECT id, command, cwd, timestamp FROM commands WHERE command NOT LIKE '/%' ESCAPE '\\' ORDER BY id DESC LIMIT ?",
+                "SELECT MAX(id) AS id, command, cwd, timestamp FROM commands "
+                "WHERE command NOT LIKE '/%' ESCAPE '\\' GROUP BY command ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         parts = terms.strip().split()
@@ -99,6 +119,14 @@ class HistoryManager:
         ]
         order_params = [f"{self._like_escape(first_term)}%"]
 
+        if cwd:
+            # Tie-break in favor of commands last run in the caller's current
+            # directory - a substring match here still beats a same-cwd
+            # match elsewhere, but among similar matches "you ran this here
+            # before" is a stronger signal than raw recency or length.
+            order_parts.append("CASE WHEN cwd = ? THEN 0 ELSE 1 END")
+            order_params.append(cwd)
+
         if len(pos) > 1:
             instr_sum = " + ".join([f"INSTR(LOWER(command), ?)" for _ in pos])
             order_parts.append(f"({instr_sum})")
@@ -111,8 +139,12 @@ class HistoryManager:
         order_clause = ", ".join(order_parts)
 
         params = where_params + order_params + [limit]
+        # GROUP BY command dedupes repeated commands; SQLite's bare-column rule
+        # with a single MAX() aggregate means cwd/timestamp come from the most
+        # recent (max id) row in each group.
         return self._conn.execute(
-            f"SELECT id, command, cwd, timestamp FROM commands WHERE {where} ORDER BY {order_clause} LIMIT ?",
+            f"SELECT MAX(id) AS id, command, cwd, timestamp FROM commands "
+            f"WHERE {where} GROUP BY command ORDER BY {order_clause} LIMIT ?",
             params,
         ).fetchall()
 

@@ -195,6 +195,9 @@ class TerminalBox(Gtk.Box):
         self._history_sql_mode = False
         self._history_tab_mode = False
         self._tab_fallback_generation = 0
+        self._tab_fallback_pending_before = None
+        self._tab_fallback_pending_generation = None
+        self._tab_fallback_pending_time = 0
         self._connect_provider = None
         self._connect_model = None
         self._connect_key = ""
@@ -222,6 +225,7 @@ class TerminalBox(Gtk.Box):
         self._osc133_timer_pending = False
         self._osc133_pending_lines = []
         self._osc133_integration_active = False
+        self._osc133_last_history_id = None
 
         self._search_results = []
         self._search_index = 0
@@ -833,9 +837,10 @@ fi
             self._osc133_markers.append((row, "cmd_start", 0))
             self._bell_notify_cmd_running = True
             command_text = line[1:].strip()
+            self._osc133_last_history_id = None
             if (command_text and not self._is_tpgk_command(command_text)
                     and self._settings.get("history_enabled", True)):
-                self._history.add(command_text, self.get_cwd())
+                self._osc133_last_history_id = self._history.add(command_text, self.get_cwd())
                 self._input_shadow = ""
 
         elif cmd == "D":
@@ -843,6 +848,9 @@ fi
                 self._osc133_last_exit = int(line[1:])
             except ValueError:
                 self._osc133_last_exit = 0
+            if self._osc133_last_history_id is not None:
+                self._history.set_exit_code(self._osc133_last_history_id, self._osc133_last_exit)
+                self._osc133_last_history_id = None
             if self._bell_notify_cmd_running:
                 self._bell_notify_cmd_running = False
                 self._trigger_bell_notification(self._osc133_last_exit)
@@ -1482,7 +1490,25 @@ fi
             # and offer history matches instead of leaving the user with a
             # dead keypress.
             if self._input_shadow.strip():
-                self._schedule_tab_history_fallback()
+                now = GLib.get_monotonic_time()
+                # A second Tab, pressed right after the first with no other
+                # key in between (generation is only one ahead of the one we
+                # stamped) and within the same window we'd have waited out
+                # anyway, reads as "I know there's nothing here, show me
+                # history" - skip the 120ms wait instead of making the user
+                # sit through it twice.
+                if (self._tab_fallback_pending_before is not None
+                        and self._tab_fallback_generation == self._tab_fallback_pending_generation + 1
+                        and now - self._tab_fallback_pending_time < 600_000
+                        and self._get_real_command_text() == self._tab_fallback_pending_before):
+                    self._tab_fallback_pending_before = None
+                    self._start_history_tab_complete()
+                else:
+                    before = self._get_real_command_text()
+                    self._tab_fallback_pending_before = before
+                    self._tab_fallback_pending_generation = self._tab_fallback_generation
+                    self._tab_fallback_pending_time = now
+                    self._schedule_tab_history_fallback(before)
             self._input_shadow += "\t"
             return False
 
@@ -2058,7 +2084,7 @@ fi
 
             self._history_list_index = 0
             if not self._history_sql_mode:
-                self._history_list_results = self._history.search(self._history_search_query, 50)
+                self._history_list_results = self._history.search(self._history_search_query, 50, self.get_cwd())
             self._history_search_results = [(cmd,) for _, cmd, _, _ in self._history_list_results] if self._history_list_results else []
             self._show_history_list()
             return True
@@ -2172,26 +2198,31 @@ fi
             self._vte.feed_child(b'\x15')
             self._vte.feed_child(cmd.encode("utf-8"))
 
-    def _schedule_tab_history_fallback(self):
+    def _schedule_tab_history_fallback(self, before):
+        # `before` is read from the real screen, not _input_shadow: shell tab
+        # completion writes straight to the pty and never touches the
+        # keystroke mirror, so comparing against _input_shadow would miss a
+        # successful native completion and pop up history on top of it.
         if not self._settings.get("history_enabled", True):
+            self._tab_fallback_pending_before = None
             return
         generation = self._tab_fallback_generation
-        before = self._input_shadow.strip()
         GLib.timeout_add(120, self._check_tab_history_fallback, generation, before)
 
     def _check_tab_history_fallback(self, generation, before):
         if generation != self._tab_fallback_generation:
             return False
+        self._tab_fallback_pending_before = None
         if (self._history_search_mode or self._ai_mode or self._cmd_bar_visible
                 or self._provider_list or self._model_list or self._async_pending):
             return False
-        if self._input_shadow.strip() == before:
+        if self._get_real_command_text() == before:
             self._start_history_tab_complete()
         return False
 
     def _start_history_tab_complete(self):
         query = self._input_shadow.strip()
-        results = self._history.search(query, 50)
+        results = self._history.search(query, 50, self.get_cwd())
         if not results:
             return
         self._history_tab_mode = True
@@ -2241,7 +2272,7 @@ fi
                 self._vte.feed(f"\033[2J\033[H\x1b[31mSQL Error: {e}\x1b[0m\r\n\x1b[90mPress Esc to exit.\x1b[0m\r\n".encode())
                 self._history_list_results = []
         else:
-            self._history_list_results = self._history.search(self._history_search_query, 50)
+            self._history_list_results = self._history.search(self._history_search_query, 50, self.get_cwd())
             self._history_search_results = [(cmd,) for _, cmd, _, _ in self._history_list_results] if self._history_list_results else []
             self._show_history_list()
             return
