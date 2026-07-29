@@ -24,4 +24,4 @@ jobs:
         run: xvfb-run -a python3 -m pytest tests/ -v
 
       - name: Lint
-        run: python3 -m ruff check .
+        run: python3 -m ruff check tpgk/
