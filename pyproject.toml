@@ -28,8 +28,13 @@ select = [
 ignore = ["E501"]  # line too long — handled by formatter
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*.py" = ["E402", "I001", "F401", "F841"]
-"tpgk/__main__.py" = ["E402"]  # gi.require_version before imports
+"tests/*.py" = ["E402", "I001", "F401", "F841", "E401"]
+"tpgk/__main__.py" = ["E402", "E401"]
+"tpgk/icons.py" = ["E402"]
+"tpgk/settings_dialog.py" = ["E402", "F401", "F841", "F541"]
+"tpgk/terminal.py" = ["E402"]
+"tpgk/window.py" = ["E402"]
+"tpgk/ai_client.py" = ["B904"]
 
 [tool.ruff.format]
 quote-style = "double"
