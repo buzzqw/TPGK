@@ -29,7 +29,7 @@ select = [
 ignore = ["E501"]  # line too long — handled by formatter
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*.py" = ["E402", "I001"]  # sys.path manipulation before imports
+"tests/*.py" = ["E402", "I001", "F401", "F841"]  # sys.path manipulation, test references
 
 [tool.ruff.format]
 quote-style = "double"
