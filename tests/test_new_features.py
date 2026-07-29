@@ -30,7 +30,7 @@ def _isolate_settings(monkeypatch, tmp_path):
 
 def _terminal_methods():
     """Parse terminal.py and return set of method names."""
-    path = os.path.join(os.path.dirname(__file__), "..", "terminal.py")
+    path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "terminal.py")
     with open(path) as f:
         tree = ast.parse(f.read())
     return {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
@@ -38,7 +38,7 @@ def _terminal_methods():
 
 def _terminal_class_attrs():
     """Parse TerminalBox.__init__ for attribute assignments."""
-    path = os.path.join(os.path.dirname(__file__), "..", "terminal.py")
+    path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "terminal.py")
     with open(path) as f:
         source = f.read()
     return source
@@ -343,7 +343,7 @@ class TestFeature5LiveReloadBehavior:
 
     def test_notify_changed_called_on_save(self):
         """_on_response in SettingsDialog deve chiamare notify_changed()."""
-        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
         with open(path) as f:
             content = f.read()
         assert 'notify_changed()' in content, \
@@ -351,7 +351,7 @@ class TestFeature5LiveReloadBehavior:
 
     def test_scheme_combo_has_changed_signal(self):
         """Il dropdown scheme deve avere un handler 'changed'."""
-        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
         with open(path) as f:
             content = f.read()
         assert 'connect("changed", self._on_scheme_changed)' in content or \
@@ -360,7 +360,7 @@ class TestFeature5LiveReloadBehavior:
 
     def test_on_scheme_changed_method_exists(self):
         """_on_scheme_changed deve esistere in SettingsDialog."""
-        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
         with open(path) as f:
             tree = ast.parse(f.read())
         methods = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
@@ -371,7 +371,7 @@ class TestFeature5LiveReloadBehavior:
         """_on_scheme_changed deve aggiornare _fg_color_btn."""
         idx = SOURCE.find('def _on_scheme_changed')
         if idx < 0:
-            path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+            path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
             with open(path) as f:
                 dialog_source = f.read()
             idx = dialog_source.find('def _on_scheme_changed')
@@ -380,7 +380,7 @@ class TestFeature5LiveReloadBehavior:
             block = dialog_source[idx:dialog_source.find('\n    def ', idx + 20)]
         else:
             block = ""  # not in terminal.py
-            path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+            path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
             with open(path) as f:
                 dialog_source = f.read()
             idx = dialog_source.find('def _on_scheme_changed')
@@ -402,7 +402,7 @@ class TestFeature6FontChooser:
 
     def test_font_button_in_settings_dialog(self):
         """SettingsDialog deve usare Gtk.FontButton."""
-        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
         with open(path) as f:
             content = f.read()
         assert 'Gtk.FontButton' in content, "Gtk.FontButton non presente in settings_dialog.py"
@@ -411,7 +411,7 @@ class TestFeature6FontChooser:
 
     def test_no_old_font_entry_spin(self):
         """_entry_font e _spin_font_size devono essere rimossi."""
-        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
         with open(path) as f:
             content = f.read()
         assert '_entry_font' not in content, "_entry_font ancora presente (rimuovere)"
@@ -475,7 +475,7 @@ class TestFeature7AiSystemPrompt:
 
     def test_sys_prompt_textbuffer_in_dialog(self):
         """Settings dialog deve avere Gtk.TextBuffer per il system prompt."""
-        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
         with open(path) as f:
             content = f.read()
         assert 'sys_prompt_buf' in content, "sys_prompt_buf non in settings_dialog.py"
@@ -783,7 +783,7 @@ class TestTerminalSize:
 
     def test_settings_dialog_has_size_spinbuttons(self):
         """Preferences deve avere spin button per columns e rows."""
-        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
         with open(path) as f:
             content = f.read()
         assert '_spin_columns' in content, "_spin_columns non in settings_dialog.py"
@@ -791,7 +791,7 @@ class TestTerminalSize:
 
     def test_settings_dialog_saves_terminal_size(self):
         """_on_response deve salvare terminal_columns e terminal_rows."""
-        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
         with open(path) as f:
             content = f.read()
         idx = content.find('def _on_response')
@@ -817,7 +817,7 @@ class TestTerminalSize:
 class TestWindowSize:
 
     def _window_source(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "window.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "window.py")
         with open(path) as f:
             return f.read()
 
@@ -955,13 +955,13 @@ class TestSessionRestore:
         assert DEFAULTS['session_restore'] is True
 
     def test_session_restore_called_in_main(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "__main__.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "__main__.py")
         with open(path) as f:
             content = f.read()
         assert '_restore_session' in content
 
     def test_save_session_on_close(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "window.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "window.py")
         with open(path) as f:
             content = f.read()
         assert '_save_session' in content
@@ -1030,7 +1030,7 @@ class TestWindowPadding:
         assert '_apply_padding()' in block
 
     def test_padding_spinbuttons_in_dialog(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
         with open(path) as f:
             content = f.read()
         assert '_spin_pad_h' in content
@@ -1117,14 +1117,14 @@ class TestProfiles:
         assert callable(apply_profile)
 
     def test_profiles_menu_in_window(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "window.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "window.py")
         with open(path) as f:
             content = f.read()
         assert '_profiles_menu' in content
         assert '_populate_profiles_menu' in content
 
     def test_save_profile_dialog(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "window.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "window.py")
         with open(path) as f:
             content = f.read()
         assert '_save_profile_dialog' in content
@@ -1186,7 +1186,7 @@ class TestUndercurl:
             assert style in SOURCE
 
     def test_undercurl_combo_in_dialog(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "settings_dialog.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "settings_dialog.py")
         with open(path) as f:
             content = f.read()
         assert '_combo_undercurl' in content

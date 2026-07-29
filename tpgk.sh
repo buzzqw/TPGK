@@ -10,4 +10,4 @@ if [ -d "$1" ]; then
     cd "$1" || cd "$HOME"
     shift
 fi
-exec env PYTHONPATH="$(dirname "$SCRIPT_DIR")" "$PYTHON_BIN" -m tpgk "$@"
+exec env PYTHONPATH="$SCRIPT_DIR" "$PYTHON_BIN" -m tpgk "$@"
