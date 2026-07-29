@@ -149,6 +149,44 @@ la selezione direttamente al file note.
 
 L'editor e' configurabile in `Preferences > Notes`.
 
+### /learn
+
+```
+/learn comandi.txt
+/learn ~/snippets/deploy.sh
+```
+
+Importa nella history un comando per riga da un file di testo, senza
+eseguirli: utile per "insegnare" a TPGK una lista di comandi gia' pronti
+(es. su una shell nuova senza history) invece di digitarli uno per uno.
+Righe vuote o che iniziano con `#` vengono ignorate. Per sicurezza vengono
+letti al massimo 5000 righe e le righe piu' lunghe di 1000 caratteri sono
+scartate (probabilmente non sono comandi ma testo/output incollato per
+errore).
+
+### /optimize history
+
+```
+/optimize history
+```
+
+Esegue manutenzione sul database SQLite della history:
+
+- **Deduplica**: tiene solo la riga piu' recente per ogni coppia
+  (comando, cartella), come `HISTCONTROL=erasedups` di bash. Lo stesso
+  comando eseguito in cartelle diverse resta distinto (e' contesto utile).
+- **WAL checkpoint**: scarica il file `-wal` nel database principale.
+- **ANALYZE**: aggiorna le statistiche usate dal query planner (utile
+  per le ricerche `LIKE` e per `:sql`).
+- **VACUUM**: ricompatta il file e recupera lo spazio delle righe
+  cancellate (SQLite non lo fa da solo dopo una `DELETE`).
+
+Il comando stampa quante righe duplicate sono state rimosse e la
+dimensione del database prima/dopo. E' un'operazione a bassa priorita':
+utile ogni tanto se la history e' molto rumorosa (stesso comando ripetuto
+tante volte), non necessaria per il normale funzionamento (il trim
+automatico a 1.000.000 di righe resta comunque attivo in background).
+
 ---
 
 ## 4. AI Chat
@@ -571,6 +609,8 @@ Al prossimo avvio TPGK creera' una configurazione pulita.
 /connect [provider]    Connetti a un provider AI (con auto-detection modelli)
 /wnotes [-f] testo     Salva una nota
 /onotes [-f]           Apri le note
+/learn <file>          Importa comandi da un file nella history (senza eseguirli)
+/optimize history      Deduplica, vacuum e analyze del db della history
 /help                  Mostra tutti i comandi o apri command palette con /
 
 Ctrl+R                 Ricerca history interattiva

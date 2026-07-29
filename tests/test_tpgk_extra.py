@@ -622,6 +622,67 @@ class TestHistorySpaceInsensitive:
         assert len(r) == 1
 
 
+# ── History: /optimize maintenance ────────────────────────────────
+
+class TestHistoryOptimize:
+
+    @pytest.fixture
+    def hm(self, tmp_path):
+        import tpgk.history as hist
+        orig_dir, orig_db = hist.HISTORY_DIR, hist.HISTORY_DB
+        db = tmp_path / "test.db"
+        hist.HISTORY_DIR = str(tmp_path)
+        hist.HISTORY_DB = str(db)
+        hm = HistoryManager()
+        yield hm
+        hist.HISTORY_DIR, hist.HISTORY_DB = orig_dir, orig_db
+        try:
+            hm._conn.close()
+        except Exception:
+            pass
+        HistoryManager._instance = None
+
+    def test_optimize_removes_duplicates_keeping_latest(self, hm):
+        hm.add("git status", "/proj")
+        hm.add("git status", "/proj")
+        hm.add("git status", "/proj")
+        stats = hm.optimize()
+        assert stats["rows_before"] == 3
+        assert stats["rows_after"] == 1
+        assert stats["duplicates_removed"] == 2
+        remaining = hm._conn.execute("SELECT id, command FROM commands").fetchall()
+        assert len(remaining) == 1
+        assert remaining[0][0] == 3  # kept the most recent row, not the first
+
+    def test_optimize_keeps_same_command_in_different_cwd(self, hm):
+        hm.add("git status", "/proj-a")
+        hm.add("git status", "/proj-b")
+        stats = hm.optimize()
+        assert stats["rows_after"] == 2
+        assert stats["duplicates_removed"] == 0
+
+    def test_optimize_no_duplicates_is_a_noop(self, hm):
+        hm.add("ls -la", "/home")
+        hm.add("pwd", "/home")
+        stats = hm.optimize()
+        assert stats["rows_before"] == 2
+        assert stats["rows_after"] == 2
+        assert stats["duplicates_removed"] == 0
+
+    def test_optimize_survives_empty_history(self, hm):
+        stats = hm.optimize()
+        assert stats["rows_before"] == 0
+        assert stats["rows_after"] == 0
+
+    def test_optimize_is_usable_afterwards(self, hm):
+        hm.add("echo one", "/home")
+        hm.optimize()
+        hm.add("echo two", "/home")
+        rows = hm.get_all()
+        assert ("echo two",) in rows
+        assert ("echo one",) in rows
+
+
 # ── Opacity rounding ─────────────────────────────────────────────
 
 class TestOpacityRounding:

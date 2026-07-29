@@ -17,9 +17,9 @@ from tpgk.notes import NotesManager
 from tpgk.ai_client import AIClient
 
 
-TPGK_COMMANDS = ["history", "ai", "connect", "wnotes", "onotes", "help", "clear", "cls"]
+TPGK_COMMANDS = ["history", "ai", "connect", "wnotes", "onotes", "learn", "optimize", "help", "clear", "cls"]
 
-_TPGK_PREFIXES = ("/ai", "/history", "/wnotes", "/onotes", "/connect", "/help", "/clear", "/cls")
+_TPGK_PREFIXES = ("/ai", "/history", "/wnotes", "/onotes", "/learn", "/optimize", "/connect", "/help", "/clear", "/cls")
 
 
 class TerminalBox(Gtk.Box):
@@ -1571,6 +1571,18 @@ fi
                     self._vte.feed_child(b'\r')
                     self._input_shadow = ""
                     return True
+                elif shadow.startswith("/learn"):
+                    args = shadow.split(None, 1)[1] if " " in shadow else ""
+                    self._cmd_learn(args)
+                    self._vte.feed_child(b'\r')
+                    self._input_shadow = ""
+                    return True
+                elif shadow.startswith("/optimize"):
+                    args = shadow.split(None, 1)[1] if " " in shadow else ""
+                    self._cmd_optimize(args)
+                    self._vte.feed_child(b'\r')
+                    self._input_shadow = ""
+                    return True
                 elif shadow.startswith("/connect"):
                     args = shadow.split(None, 1)[1] if " " in shadow else ""
                     self._cmd_connect(args)
@@ -1775,6 +1787,12 @@ fi
         elif shadow.startswith("/onotes"):
             args = shadow.split(None, 1)[1] if " " in shadow else ""
             self._cmd_onotes(args)
+        elif shadow.startswith("/learn"):
+            args = shadow.split(None, 1)[1] if " " in shadow else ""
+            self._cmd_learn(args)
+        elif shadow.startswith("/optimize"):
+            args = shadow.split(None, 1)[1] if " " in shadow else ""
+            self._cmd_optimize(args)
         elif shadow.startswith("/connect"):
             args = shadow.split(None, 1)[1] if " " in shadow else ""
             self._cmd_connect(args)
@@ -2257,6 +2275,75 @@ fi
         path = self._notes.open_notes(filename or None)
         self._vte.feed(f"\r\n\x1b[32mOpening notes: {path}\x1b[0m\r\n".encode())
 
+    def _cmd_learn(self, args=""):
+        # Bulk-import commands into history without executing them, e.g. for
+        # cleaning up a fresh shell with no history yet. Lines are inserted
+        # via HistoryManager.add() exactly like a typed command would be,
+        # just with exit_code=-1 ("never run").
+        MAX_LINES = 5000
+        MAX_LINE_LEN = 1000
+        path = args.strip()
+        if not path:
+            self._vte.feed(b"\r\n\x1b[33mUsage: /learn <file>\x1b[0m\r\n")
+            return
+        path = os.path.expanduser(path)
+        if not os.path.isabs(path):
+            path = os.path.join(self.get_cwd(), path)
+        try:
+            with open(path, "r", errors="replace") as f:
+                lines = f.readlines()
+        except OSError as e:
+            self._vte.feed(f"\r\n\x1b[31m/learn: {e.strerror or e}\x1b[0m\r\n".encode())
+            return
+
+        cwd = self.get_cwd()
+        added = 0
+        skipped_long = 0
+        truncated = len(lines) > MAX_LINES
+        for line in lines[:MAX_LINES]:
+            cmd = line.strip()
+            if not cmd or cmd.startswith("#"):
+                continue
+            if len(cmd) > MAX_LINE_LEN:
+                skipped_long += 1
+                continue
+            self._history.add(cmd, cwd)
+            added += 1
+
+        msg = f"\r\n\x1b[32m/learn: {added} command(s) added to history from {path}\x1b[0m\r\n"
+        self._vte.feed(msg.encode())
+        if skipped_long:
+            self._vte.feed(
+                f"\x1b[33m/learn: {skipped_long} line(s) skipped (too long, not a command)\x1b[0m\r\n".encode()
+            )
+        if truncated:
+            self._vte.feed(
+                f"\x1b[33m/learn: file has more than {MAX_LINES} lines, only the first {MAX_LINES} were read\x1b[0m\r\n".encode()
+            )
+
+    @staticmethod
+    def _human_size(n: int) -> str:
+        for unit in ("B", "KB", "MB", "GB"):
+            if n < 1024:
+                return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+            n /= 1024
+        return f"{n:.1f}TB"
+
+    def _cmd_optimize(self, args=""):
+        if args.strip().lower() != "history":
+            self._vte.feed(b"\r\n\x1b[33mUsage: /optimize history\x1b[0m\r\n")
+            return
+        self._vte.feed(b"\r\n\x1b[90mOptimizing history database...\x1b[0m\r\n")
+        stats = self._history.optimize()
+        self._vte.feed(
+            f"\x1b[32m/optimize: removed {stats['duplicates_removed']} duplicate(s) "
+            f"({stats['rows_before']} -> {stats['rows_after']} rows)\x1b[0m\r\n".encode()
+        )
+        self._vte.feed(
+            f"\x1b[32m/optimize: db size {self._human_size(stats['size_before'])} -> "
+            f"{self._human_size(stats['size_after'])}\x1b[0m\r\n".encode()
+        )
+
     def _cmd_connect(self, args=""):
         if not args:
             self._show_provider_list()
@@ -2433,6 +2520,8 @@ fi
             "  \x1b[33m/connect\x1b[0m [prov]        Connect to AI provider\r\n"
             "  \x1b[33m/wnotes\x1b[0m [-file] txt    Save a timestamped note\r\n"
             "  \x1b[33m/onotes\x1b[0m [-file]         Open notes in editor\r\n"
+            "  \x1b[33m/learn\x1b[0m <file>           Import commands from a file into history (no execution)\r\n"
+            "  \x1b[33m/optimize\x1b[0m history       Dedup, vacuum and analyze the history database\r\n"
             "  \x1b[33m/help\x1b[0m                  Show this help\r\n"
             "  \x1b[33m/clear\x1b[0m                 Clear the screen\r\n"
             "\r\n"

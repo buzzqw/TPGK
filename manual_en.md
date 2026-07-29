@@ -147,6 +147,43 @@ directly to your notes file.
 
 The editor is configurable in `Preferences > Notes`.
 
+### /learn
+
+```
+/learn commands.txt
+/learn ~/snippets/deploy.sh
+```
+
+Imports one command per line from a text file into history, without
+executing them: useful for "teaching" TPGK a ready-made list of commands
+(e.g. on a fresh shell with no history yet) instead of typing them one by
+one. Blank lines and lines starting with `#` are skipped. As a safety
+measure, at most 5000 lines are read and lines longer than 1000 characters
+are discarded (they're likely not real commands but pasted text/output).
+
+### /optimize history
+
+```
+/optimize history
+```
+
+Runs maintenance on the SQLite history database:
+
+- **Dedup**: keeps only the most recent row for each (command, directory)
+  pair, same idea as bash's `HISTCONTROL=erasedups`. The same command run
+  in different directories stays separate (that's meaningful context).
+- **WAL checkpoint**: flushes the `-wal` file back into the main database.
+- **ANALYZE**: refreshes query-planner statistics (helps `LIKE` searches
+  and the `:sql` raw-query feature).
+- **VACUUM**: repacks the file and reclaims space left behind by deleted
+  rows (SQLite doesn't do this automatically after a `DELETE`).
+
+The command prints how many duplicate rows were removed and the database
+size before/after. This is a low-priority, occasional-use operation —
+useful if history got noisy (same command repeated many times), not
+required for normal operation (the automatic 1,000,000-row trim keeps running
+in the background regardless).
+
 ---
 
 ## 4. AI Chat
@@ -566,6 +603,8 @@ TPGK will create a clean configuration on next startup.
 /connect [provider]  Connect to AI provider (with model auto-detection)
 /wnotes [-f] text    Save a timestamped note
 /onotes [-f]         Open notes in editor
+/learn <file>        Import commands from a file into history (no execution)
+/optimize history    Dedup, vacuum and analyze the history database
 /help                Show all commands or press / for palette
 
 Ctrl+R               Interactive history search

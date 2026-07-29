@@ -134,7 +134,7 @@ class HistoryManager:
             params,
         ).fetchall()
 
-    def _trim(self, max_rows: int = 10000):
+    def _trim(self, max_rows: int = 1_000_000):
         count = self._conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
         if count > max_rows:
             self._conn.execute(
@@ -162,3 +162,38 @@ class HistoryManager:
     def clear(self):
         self._conn.execute("DELETE FROM commands")
         self._conn.commit()
+
+    def optimize(self):
+        """Dedup, reclaim space and refresh query-planner stats.
+
+        Keeps only the most recent row for each (command, cwd) pair —
+        same idea as bash's HISTCONTROL=erasedups — then checkpoints the
+        WAL, VACUUMs and ANALYZEs. Returns before/after stats for display.
+        """
+        rows_before = self._conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+        size_before = os.path.getsize(HISTORY_DB) if os.path.exists(HISTORY_DB) else 0
+
+        self._conn.execute(
+            "DELETE FROM commands WHERE id NOT IN ("
+            "  SELECT MAX(id) FROM commands GROUP BY command, cwd"
+            ")"
+        )
+        self._conn.commit()
+        rows_after = self._conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+
+        # VACUUM/checkpoint need no transaction open; the commit() above covers that.
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self._conn.execute("ANALYZE")
+        self._conn.execute("VACUUM")
+        self._conn.commit()
+
+        size_after = os.path.getsize(HISTORY_DB) if os.path.exists(HISTORY_DB) else 0
+        self._inserts_since_trim = 0
+
+        return {
+            "rows_before": rows_before,
+            "rows_after": rows_after,
+            "duplicates_removed": rows_before - rows_after,
+            "size_before": size_before,
+            "size_after": size_after,
+        }

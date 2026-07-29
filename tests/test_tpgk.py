@@ -414,6 +414,8 @@ class TestIntegration:
         assert "cls" in TPGK_COMMANDS
         assert "wnotes" in TPGK_COMMANDS
         assert "onotes" in TPGK_COMMANDS
+        assert "learn" in TPGK_COMMANDS
+        assert "optimize" in TPGK_COMMANDS
 
 
 if __name__ == "__main__":
