@@ -5,11 +5,11 @@ repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-import pytest  # noqa: E402
-from tpgk.settings import Settings  # noqa: E402
-from tpgk.history import HistoryManager  # noqa: E402
-import tpgk.settings as settings_mod  # noqa: E402
-import tpgk.history as history_mod  # noqa: E402
+import pytest
+from tpgk.settings import Settings
+from tpgk.history import HistoryManager
+import tpgk.settings as settings_mod
+import tpgk.history as history_mod
 
 
 @pytest.fixture(autouse=True)

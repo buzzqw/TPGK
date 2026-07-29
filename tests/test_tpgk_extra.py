@@ -9,11 +9,11 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from tpgk.settings import (  # noqa: E402
+from tpgk.settings import (
     Settings, DEFAULTS, COLOR_SCHEMES, COLOR_PALETTES,
     CONFIG_DIR, CONFIG_FILE,
 )
-import tpgk.settings as settings_mod  # noqa: E402
+import tpgk.settings as settings_mod
 
 
 @pytest.fixture(autouse=True)

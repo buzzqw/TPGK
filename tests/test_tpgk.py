@@ -8,11 +8,11 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from tpgk.settings import Settings, DEFAULTS, COLOR_SCHEMES, COLOR_PALETTES  # noqa: E402
-from tpgk.history import HistoryManager  # noqa: E402
-from tpgk.ai_client import AIClient  # noqa: E402
-from tpgk.notes import NotesManager  # noqa: E402
-import tpgk.settings as settings_mod  # noqa: E402
+from tpgk.settings import Settings, DEFAULTS, COLOR_SCHEMES, COLOR_PALETTES
+from tpgk.history import HistoryManager
+from tpgk.ai_client import AIClient
+from tpgk.notes import NotesManager
+import tpgk.settings as settings_mod
 
 
 # ── Settings ───────────────────────────────────────────────────
