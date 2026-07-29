@@ -3,3 +3,4 @@ ruff
 responses
 requests
 psutil
+PyGObject
