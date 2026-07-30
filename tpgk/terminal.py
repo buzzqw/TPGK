@@ -1502,7 +1502,7 @@ fi
                         and now - self._tab_fallback_pending_time < 600_000
                         and self._get_real_command_text() == self._tab_fallback_pending_before):
                     self._tab_fallback_pending_before = None
-                    self._start_history_tab_complete()
+                    self._start_history_tab_complete(allow_list=True)
                 else:
                     before = self._get_real_command_text()
                     self._tab_fallback_pending_before = before
@@ -2216,14 +2216,54 @@ fi
         if (self._history_search_mode or self._ai_mode or self._cmd_bar_visible
                 or self._provider_list or self._model_list or self._async_pending):
             return False
-        if self._get_real_command_text() == before:
-            self._start_history_tab_complete()
+        if self._get_real_command_text() != before:
+            return False
+        # The line text can be unchanged for two very different reasons:
+        # either the shell truly had nothing to complete, or it had several
+        # candidates with no common prefix and printed them as a list below
+        # the prompt (bash's classic "press Tab twice" behavior) without
+        # touching the line itself. In the second case the cursor moves to a
+        # new row; stepping in with our own history popup there would bury
+        # the real completion candidates the user was expecting.
+        try:
+            _, cur_row = self._vte.get_cursor_position()
+            anchor_row = self._shadow_anchor[1] if self._shadow_anchor else cur_row
+            if cur_row != anchor_row:
+                return False
+        except Exception:
+            pass
+        self._start_history_tab_complete(allow_list=False)
         return False
 
-    def _start_history_tab_complete(self):
-        query = self._input_shadow.strip()
+    def _fill_history_match(self, cmd: str):
+        # Replaces the current line in-place with a single unambiguous
+        # history match - same "fill" semantics Enter has in the picker,
+        # just without needing to open it for a match that isn't in doubt.
+        self.feed_command_bytes(b'\x15')
+        self._input_shadow = cmd
+        self._vte.feed_child(cmd.encode('utf-8'))
+
+    def _start_history_tab_complete(self, allow_list=True):
+        # Use the real on-screen text, not the keystroke-mirrored shadow:
+        # the shadow can diverge (shell-native history recall, mid-line
+        # edits, partial completions already typed) and querying history
+        # with a stale/wrong string is exactly what produces irrelevant
+        # results in the picker.
+        query = self._get_real_command_text()
         results = self._history.search(query, 50, self.get_cwd())
         if not results:
+            return
+        if len(results) == 1:
+            # A "certain" case: exactly one command in history matches.
+            # Fill it directly - on a single Tab this is the only thing we
+            # do (no popup out of nowhere); on a double Tab it's still the
+            # right call, since showing a one-item list would just add an
+            # extra Enter for no benefit.
+            self._fill_history_match(results[0][1])
+            return
+        if not allow_list:
+            # Ambiguous, and this is the single-Tab fallback path: only a
+            # deliberate second Tab is allowed to open the full picker.
             return
         self._history_tab_mode = True
         self._history_list_display = True
