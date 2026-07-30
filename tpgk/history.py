@@ -113,11 +113,16 @@ class HistoryManager:
         where_clauses.append("command NOT LIKE '/%' ESCAPE '\\'")
         where = " AND ".join(where_clauses)
 
-        first_term = pos[0]
-        order_parts = [
-            f"CASE WHEN command LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END",
-        ]
-        order_params = [f"{self._like_escape(first_term)}%"]
+        # A query made up entirely of exclusion terms (e.g. "-hello -world")
+        # leaves pos empty - there's no positive term to rank prefix matches
+        # against, so that ordering clause is simply skipped rather than
+        # assumed to always exist.
+        order_parts = []
+        order_params = []
+        if pos:
+            first_term = pos[0]
+            order_parts.append("CASE WHEN command LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END")
+            order_params.append(f"{self._like_escape(first_term)}%")
 
         if cwd:
             # Tie-break in favor of commands last run in the caller's current
@@ -192,7 +197,12 @@ class HistoryManager:
         ]
         order_clause = ", ".join(order_parts)
 
-        params = where_params + [limit, limit] + order_params
+        # Placeholder order in the SQL is: where_params..., inner LIMIT,
+        # order_params..., outer LIMIT — params must follow that exact
+        # sequence or SQLite binds values to the wrong slot (e.g. an int
+        # limit landing where a LIKE pattern is expected, or vice versa),
+        # which raises "datatype mismatch" once it hits the outer LIMIT.
+        params = where_params + [limit] + order_params + [limit]
         # Fix #16: outer ORDER BY — SQLite does not guarantee subquery ordering survives.
         return self._conn.execute(
             "SELECT command FROM ("
