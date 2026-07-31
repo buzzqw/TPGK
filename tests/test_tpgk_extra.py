@@ -642,17 +642,18 @@ class TestHistoryOptimize:
             pass
         HistoryManager._instance = None
 
-    def test_optimize_removes_duplicates_keeping_latest(self, hm):
+    def test_optimize_does_not_dedupe_rows(self, hm):
+        # optimize() only reclaims space/refreshes stats (VACUUM/ANALYZE/
+        # wal_checkpoint) - it intentionally no longer deletes duplicate rows.
         hm.add("git status", "/proj")
         hm.add("git status", "/proj")
         hm.add("git status", "/proj")
         stats = hm.optimize()
         assert stats["rows_before"] == 3
-        assert stats["rows_after"] == 1
-        assert stats["duplicates_removed"] == 2
+        assert stats["rows_after"] == 3
+        assert stats["duplicates_removed"] == 0
         remaining = hm._conn.execute("SELECT id, command FROM commands").fetchall()
-        assert len(remaining) == 1
-        assert remaining[0][0] == 3  # kept the most recent row, not the first
+        assert len(remaining) == 3
 
     def test_optimize_keeps_same_command_in_different_cwd(self, hm):
         hm.add("git status", "/proj-a")
