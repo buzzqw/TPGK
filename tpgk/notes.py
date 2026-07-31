@@ -31,16 +31,20 @@ class NotesManager:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         entry = f"\n## {ts}\n\n{text}\n"
-        with open(path, "a") as f:
+        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as f:
             f.write(entry)
+        os.chmod(path, 0o600)
         return path
 
     def open_notes(self, filename=None):
         path = self._get_notes_path(filename)
         if not os.path.isfile(path):
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            with open(path, "w") as f:
+            fd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "w") as f:
                 f.write("# TPGK Notes\n\n")
+            os.chmod(path, 0o600)
 
         opener = shutil.which("xdg-open")
         if opener:

@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import datetime
+import threading
 
 HISTORY_DIR = os.path.join(os.path.expanduser("~"), ".config", "tpgk")
 HISTORY_DB = os.path.join(HISTORY_DIR, "history.db")
@@ -160,8 +161,15 @@ class HistoryManager:
             raise ValueError("Only SELECT and EXPLAIN queries are supported")
 
         ro_conn = sqlite3.connect(f"file:{HISTORY_DB}?mode=ro", uri=True)
+
+        def authorizer(action, arg1, arg2, dbname, source):
+            if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION):
+                return sqlite3.SQLITE_OK
+            return sqlite3.SQLITE_DENY
+
         try:
             ro_conn.set_progress_handler(lambda: 2_000_000, 10000)
+            ro_conn.set_authorizer(authorizer)
             cur = ro_conn.execute(sql_stripped)
             rows = cur.fetchall()
             if len(rows) > 1000:
@@ -213,13 +221,15 @@ class HistoryManager:
         ).fetchall()
 
     def _trim(self, max_rows: int = 1_000_000):
-        count = self._conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
-        if count > max_rows:
-            self._conn.execute(
-                "DELETE FROM commands WHERE id NOT IN (SELECT id FROM commands ORDER BY id DESC LIMIT ?)",
-                (max_rows,),
-            )
-            self._conn.commit()
+        def _do_trim():
+            count = self._conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+            if count > max_rows:
+                self._conn.execute(
+                    "DELETE FROM commands WHERE id NOT IN (SELECT id FROM commands ORDER BY id DESC LIMIT ?)",
+                    (max_rows,),
+                )
+                self._conn.commit()
+        threading.Thread(target=_do_trim, daemon=True).start()
 
     def search_latest(self, prefix: str = "", limit: int = 20):
         if prefix:
@@ -242,29 +252,20 @@ class HistoryManager:
         self._conn.commit()
 
     def optimize(self):
-        """Dedup, reclaim space and refresh query-planner stats.
+        """Reclaim space and refresh query-planner stats.
 
-        Keeps only the most recent row for each (command, cwd) pair —
-        same idea as bash's HISTCONTROL=erasedups — then checkpoints the
+        Checkpoints the
         WAL, VACUUMs and ANALYZEs. Returns before/after stats for display.
         """
         rows_before = self._conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
         size_before = os.path.getsize(HISTORY_DB) if os.path.exists(HISTORY_DB) else 0
 
-        self._conn.execute(
-            "DELETE FROM commands WHERE id NOT IN ("
-            "  SELECT MAX(id) FROM commands GROUP BY command, cwd"
-            ")"
-        )
-        self._conn.commit()
-        rows_after = self._conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
-
-        # VACUUM/checkpoint need no transaction open; the commit() above covers that.
         self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self._conn.execute("ANALYZE")
         self._conn.execute("VACUUM")
         self._conn.commit()
 
+        rows_after = self._conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
         size_after = os.path.getsize(HISTORY_DB) if os.path.exists(HISTORY_DB) else 0
         self._inserts_since_trim = 0
 

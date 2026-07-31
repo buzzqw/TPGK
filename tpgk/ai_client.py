@@ -58,7 +58,8 @@ class AIClient:
         self._system_prompt = prompt
 
     def chat(self, message: str) -> str:
-        if self._system_prompt and not any(m.get("role") == "system" for m in self._messages):
+        has_system = any(m.get("role") == "system" for m in self._messages)
+        if self._system_prompt and not has_system:
             self._messages.insert(0, {"role": "system", "content": self._system_prompt})
         self._messages.append({"role": "user", "content": message})
         try:
@@ -69,12 +70,14 @@ class AIClient:
             else:
                 return self._call_openai_compatible()
         except Exception:
-            # Fix #11: rollback orphaned user message on failure to keep role alternation valid
             self._messages.pop()
+            if self._system_prompt and not has_system and self._messages and self._messages[0].get("role") == "system":
+                self._messages.pop(0)
             raise
 
     def chat_stream(self, message: str) -> Generator[str, None, None]:
-        if self._system_prompt and not any(m.get("role") == "system" for m in self._messages):
+        has_system = any(m.get("role") == "system" for m in self._messages)
+        if self._system_prompt and not has_system:
             self._messages.insert(0, {"role": "system", "content": self._system_prompt})
         self._messages.append({"role": "user", "content": message})
         try:
@@ -85,8 +88,9 @@ class AIClient:
             else:
                 yield from self._call_openai_stream()
         except Exception:
-            # Fix #11: rollback on stream failure
             self._messages.pop()
+            if self._system_prompt and not has_system and self._messages and self._messages[0].get("role") == "system":
+                self._messages.pop(0)
             raise
 
     def reset(self):

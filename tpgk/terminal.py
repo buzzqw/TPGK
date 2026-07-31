@@ -1514,6 +1514,14 @@ fi
 
         if key == Gdk.KEY_Return or key == Gdk.KEY_KP_Enter:
             shadow = self._input_shadow.strip()
+            if not self._is_tpgk_command(shadow):
+                # The mirrored buffer misses anything the shell's own line
+                # editor put there instead of individual keystrokes (native
+                # Up/Down history recall, mid-line edits) - fall back to
+                # reading the rendered line so those still get intercepted.
+                real_text = self._get_real_command_text()
+                if self._is_tpgk_command(real_text):
+                    shadow = real_text
             if shadow:
                 is_tpgk_cmd = self._is_tpgk_command(shadow)
                 # TPGK commands never reach the shell (the readline buffer
@@ -2123,12 +2131,14 @@ fi
         self._vte.feed(b'\r\033[K')
         if self._history_search_index >= 0 and self._history_search_index < len(self._history_search_results):
             selected = self._history_search_results[self._history_search_index][0]
-            self._vte.feed(f"\r\x1b[92m> {selected}\x1b[0m".encode())
+            display_sel = selected.replace('\n', '\x1b[90m\u23ce\x1b[92m ').replace('\r', '')
+            self._vte.feed(f"\r\x1b[92m> {display_sel}\x1b[0m".encode())
         elif self._history_search_results:
             preview = self._history_search_results[0][0]
+            display_prev = preview.replace('\n', '\x1b[90m\u23ce\x1b[33m ').replace('\r', '')
             count = len(self._history_search_results)
             self._vte.feed(
-                f"\r\x1b[44m\x1b[37m(reverse-i-search)`{self._history_search_query}`: {count}\x1b[0m  \x1b[33m{preview[:60]}\x1b[0m".encode()
+                f"\r\x1b[44m\x1b[37m(reverse-i-search)`{self._history_search_query}`: {count}\x1b[0m  \x1b[33m{display_prev[:60]}\x1b[0m".encode()
             )
         else:
             self._vte.feed(
@@ -2163,16 +2173,16 @@ fi
             if len(row) >= 4 and not self._history_sql_mode:
                 _, cmd, _, ts = row
                 time_str = ts[-8:] if ts else ""
-                display = str(cmd)[:100] + ("..." if len(str(cmd)) > 100 else "")
+                raw_cmd = str(cmd)
             elif self._history_sql_mode:
-                display = " | ".join(str(v) for v in row)[:150]
-                if len(" | ".join(str(v) for v in row)) > 150:
-                    display += "..."
+                raw_cmd = " | ".join(str(v) for v in row)
                 time_str = ""
             else:
-                cmd = str(tuple(row))
+                raw_cmd = str(tuple(row))
                 time_str = ""
-                display = cmd[:100] + ("..." if len(cmd) > 100 else "")
+
+            display_cmd = raw_cmd.replace('\n', '\x1b[90m\u23ce\x1b[0m ').replace('\r', '')
+            display = display_cmd[:100] + ("..." if len(raw_cmd) > 100 else "")
 
             if i == self._history_list_index:
                 out += f"\x1b[92m \u25b6 \x1b[0m{display}  \x1b[90m{time_str}\x1b[0m\r\n"
@@ -2527,6 +2537,8 @@ fi
         if gen != self._async_generation:
             return
         models = AIClient.fetch_models(provider, key, base_url)
+        if gen != self._async_generation:
+            return
         GLib.idle_add(lambda g=gen: self._on_models_fetched(provider, key, model, base_url, models) if self._async_generation == g else None)
 
     def _on_models_fetched(self, provider, key, model, base_url, models):

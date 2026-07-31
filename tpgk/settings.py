@@ -1,6 +1,7 @@
 import os
 import json
 import tempfile
+import threading
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "tpgk")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "settings.json")
@@ -185,6 +186,7 @@ class Settings:
             cls._instance._data = dict(DEFAULTS)
             cls._instance._callbacks = []
             cls._instance._batch = False
+            cls._instance._lock = threading.Lock()
         return cls._instance
 
     def connect(self, callback):
@@ -247,13 +249,15 @@ class Settings:
             raise
 
     def get(self, key, default=None):
-        self._ensure_loaded()
-        return self._data.get(key, default)
+        with self._lock:
+            self._ensure_loaded()
+            return self._data.get(key, default)
 
     def set(self, key, value):
-        self._data[key] = value
-        if not self._batch:
-            self.save()
+        with self._lock:
+            self._data[key] = value
+            if not self._batch:
+                self.save()
 
     def set_many(self, updates: dict):
         for key, value in updates.items():
