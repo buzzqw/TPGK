@@ -14,12 +14,14 @@ from gi.repository import Gtk, Gdk, GLib, Pango, Vte
 from tpgk.settings import Settings
 from tpgk.history import HistoryManager
 from tpgk.notes import NotesManager
-from tpgk.ai_client import AIClient
+from tpgk.ai_client import AIClient, AIRequestCancelled
+from tpgk.logging_utils import get_logger
 
 
 TPGK_COMMANDS = ["history", "ai", "connect", "wnotes", "onotes", "learn", "optimize", "help", "clear", "cls"]
 
 _TPGK_PREFIXES = ("/ai", "/history", "/wnotes", "/onotes", "/learn", "/optimize", "/connect", "/help", "/clear", "/cls")
+logger = get_logger(__name__)
 
 
 class TerminalBox(Gtk.Box):
@@ -184,6 +186,8 @@ class TerminalBox(Gtk.Box):
         self._ai_input = ""
         self._ai_busy = False
         self._ai_generation = 0
+        self._ai_cancel_event = None
+        self._ai_thread = None
         self._history_search_mode = False
         self._history_search_query = ""
         self._history_search_index = 0
@@ -194,6 +198,7 @@ class TerminalBox(Gtk.Box):
         self._history_list_nlines = 0
         self._history_sql_mode = False
         self._history_tab_mode = False
+        self._history_tab_original = ""
         self._tab_fallback_generation = 0
         self._tab_fallback_pending_before = None
         self._tab_fallback_pending_generation = None
@@ -403,12 +408,15 @@ class TerminalBox(Gtk.Box):
         if vscrollbar:
             vscrollbar.set_visible(visible)
 
-    def launch(self, cwd=None):
-        shell = self._settings.get("shell_command", "/bin/bash")
-        if self._settings.get("login_shell", True):
-            argv = [shell, "-l"]
+    def launch(self, cwd=None, command=None):
+        if command:
+            argv = list(command)
         else:
-            argv = [shell]
+            shell = self._settings.get("shell_command", "/bin/bash")
+            if self._settings.get("login_shell", True):
+                argv = [shell, "-l"]
+            else:
+                argv = [shell]
 
         env = os.environ.copy()
         env["TERM"] = "xterm-256color"
@@ -549,6 +557,7 @@ fi
 
     def _on_spawn_complete(self, terminal, pid, error, user_data=None):
         if error:
+            logger.error("shell_spawn_failed error=%s", error.message)
             self._vte.feed(
                 f"\r\n\x1b[31m[Failed to start shell: {error.message}]\x1b[0m\r\n".encode()
             )
@@ -564,6 +573,7 @@ fi
                     self._on_osc133_pipe_data)
 
     def terminate(self):
+        self._cancel_ai_stream()
         if self._osc133_rfd >= 0:
             try:
                 os.close(self._osc133_rfd)
@@ -916,10 +926,9 @@ fi
             return
 
         try:
-            cur_col, cur_row = self._vte.get_cursor_position()
+            _cur_col, cur_row = self._vte.get_cursor_position()
         except Exception:
             cur_row = 0
-            cur_col = 0
 
         prompts = [(r, e) for r, t, e in self._osc133_markers if t == "prompt"]
         if not prompts:
@@ -927,12 +936,12 @@ fi
 
         target = None
         if direction_up:
-            for r, e in reversed(prompts):
+            for r, _exit_code in reversed(prompts):
                 if r < cur_row - 1:
                     target = r
                     break
         else:
-            for r, e in prompts:
+            for r, _exit_code in prompts:
                 if r > cur_row:
                     target = r
                     break
@@ -945,14 +954,14 @@ fi
 
     def _get_command_output_range(self):
         try:
-            cur_col, cur_row = self._vte.get_cursor_position()
+            _cur_col, cur_row = self._vte.get_cursor_position()
         except Exception:
             return None, None
 
         cmd_start = None
         prompt_end = None
 
-        for row, mtype, exit_code in self._osc133_markers:
+        for row, mtype, _exit_code in self._osc133_markers:
             if mtype == "prompt" and row <= cur_row:
                 prompt_end = row
             if mtype == "cmd_start" and row <= cur_row:
@@ -1369,6 +1378,7 @@ fi
                 self._ai_mode = False
                 self._ai_generation += 1
                 self._ai_busy = False
+                self._cancel_ai_stream(invalidate=False)
                 self._provider_list = []
                 self._model_list = []
                 self._async_pending = False
@@ -1401,6 +1411,7 @@ fi
         if self._ai_mode and not ctrl:
             if key == Gdk.KEY_Escape:
                 self._ai_mode = False
+                self._cancel_ai_stream()
                 self._ai_input = ""
                 self.feed_command_bytes(b'\x15')
                 self._vte.feed(b'\r\n')
@@ -1411,6 +1422,7 @@ fi
                 self._ai_input = ""
                 if question == "/ai off":
                     self._ai_mode = False
+                    self._cancel_ai_stream()
                     self._ai_client = None
                     self._vte.feed(b"\r\n\x1b[33m[AI Chat Ended]\x1b[0m\r\n")
                     return True
@@ -1482,6 +1494,14 @@ fi
             return True
 
         if key == Gdk.KEY_Tab:
+            # Bash completion for `ssh ` can synchronously inspect hosts and
+            # block readline for several seconds. When TPGK already has SSH
+            # history, prefer it so Escape can always return immediately.
+            if (self._input_shadow.endswith(" ")
+                    and self._input_shadow.rstrip() == "ssh"
+                    and self._history.search("ssh", 1, self.get_cwd())):
+                self._start_history_tab_complete(allow_list=True)
+                return True
             # Let the shell's own completion run first, untouched (files,
             # paths, git branches, ssh hosts, whatever bash knows how to
             # complete) - that answer can depend on completion scripts we
@@ -1544,6 +1564,7 @@ fi
                     self.feed_command_bytes(b'\x15')
                 if shadow == "/ai off":
                     self._ai_mode = False
+                    self._cancel_ai_stream()
                     self._ai_client = None
                     self._vte.feed(b"\r\n\x1b[33m[AI Chat Ended]\x1b[0m\r\n")
                     self._vte.feed_child(b'\r')
@@ -1781,6 +1802,7 @@ fi
         self.feed_command_bytes(b'\x15')
         if shadow == "/ai off":
             self._ai_mode = False
+            self._cancel_ai_stream()
             self._ai_client = None
             self._vte.feed(b"\r\n\x1b[33m[AI Chat Ended]\x1b[0m\r\n")
         elif shadow.startswith("/ai context "):
@@ -1934,26 +1956,47 @@ fi
         self._vte.feed('\x1b[33m● Thinking\x1b[0m'.encode('utf-8'))
         self._ai_generation += 1
         gen = self._ai_generation
-        threading.Thread(target=self._run_ai_stream, args=(question, gen), daemon=True).start()
+        client = self._ai_client
+        cancel_event = threading.Event()
+        self._ai_cancel_event = cancel_event
+        self._ai_thread = threading.Thread(target=self._run_ai_stream,
+                                           args=(client, question, gen, cancel_event), daemon=True)
+        self._ai_thread.start()
 
-    def _run_ai_stream(self, question, gen):
+    def _cancel_ai_stream(self, invalidate=True):
+        if self._ai_cancel_event is not None:
+            self._ai_cancel_event.set()
+        if self._ai_client is not None:
+            self._ai_client.cancel()
+        if self._ai_busy and invalidate:
+            self._ai_generation += 1
+        self._ai_busy = False
+        self._ai_cancel_event = None
+
+    def _run_ai_stream(self, client, question, gen, cancel_event):
         first_token = True
         try:
-            for chunk in self._ai_client.chat_stream(question):
-                if not self._ai_mode or self._ai_generation != gen:
+            for chunk in client.chat_stream(question, cancel_event):
+                if cancel_event.is_set() or not self._ai_mode or self._ai_generation != gen:
                     break
                 if first_token:
                     first_token = False
                     GLib.idle_add(lambda g=gen: (self._vte.feed(b'\r\x1b[K')
                                          if self._ai_generation == g and self._ai_mode else None))
+                data = chunk.encode("utf-8")
                 GLib.idle_add(
-                    lambda data=chunk.encode("utf-8"), g=gen:
+                    lambda data=data, g=gen:
                         (self._vte.feed(data)
                          if self._ai_generation == g and self._ai_mode else None))
-        except Exception as e:
-            if self._ai_mode and self._ai_generation == gen:
+        except Exception as error:
+            if cancel_event.is_set() or isinstance(error, AIRequestCancelled):
+                logger.info("ai_request_cancelled")
+            else:
+                logger.exception("ai_request_failed")
+            if (not cancel_event.is_set() and not isinstance(error, AIRequestCancelled)
+                    and self._ai_mode and self._ai_generation == gen):
                 GLib.idle_add(
-                    lambda err=str(e), g=gen:
+                    lambda err=str(error), g=gen:
                         (self._vte.feed(
                             f"\r\n\x1b[31m[AI Error] {err}\x1b[0m\r\n".encode())
                          if self._ai_generation == g else None)
@@ -1964,6 +2007,8 @@ fi
         if gen is not None and self._ai_generation != gen:
             return
         self._ai_busy = False
+        self._ai_cancel_event = None
+        self._ai_thread = None
         if self._ai_mode:
             self._vte.feed(b'\r\n\r\n')
 
@@ -2018,7 +2063,7 @@ fi
             # cleared to show the full-screen list, so cancelling must retype
             # what the user had so far instead of leaving an empty prompt.
             tab_mode = self._history_tab_mode
-            original = self._input_shadow if tab_mode else ""
+            original = self._history_tab_original if tab_mode else ""
             # _exit_history_search_mode() already asks the real shell for a
             # fresh prompt when leaving the full-screen list view; adding
             # another \r\n here on top of that would leave a stray blank
@@ -2034,7 +2079,7 @@ fi
                 results = self._history_list_results
                 sel_idx = self._history_list_index
                 tab_mode = self._history_tab_mode
-                original = self._input_shadow
+                original = self._history_tab_original
                 self._exit_history_search_mode()
                 if results and 0 <= sel_idx < len(results):
                     row = results[sel_idx]
@@ -2242,7 +2287,9 @@ fi
                 return False
         except Exception:
             pass
-        self._start_history_tab_complete(allow_list=False)
+        # The shell did not complete or list candidates, so its Tab handling
+        # is finished. Show all matching history entries on the first Tab.
+        self._start_history_tab_complete(allow_list=True)
         return False
 
     def _fill_history_match(self, cmd: str):
@@ -2272,10 +2319,11 @@ fi
             self._fill_history_match(results[0][1])
             return
         if not allow_list:
-            # Ambiguous, and this is the single-Tab fallback path: only a
-            # deliberate second Tab is allowed to open the full picker.
             return
         self._history_tab_mode = True
+        # _input_shadow includes the Tab keystroke that triggered this view.
+        # Never feed that control character back to readline on Escape.
+        self._history_tab_original = self._input_shadow.rstrip("\t") or query
         self._history_list_display = True
         self._history_search_mode = True
         self._history_search_query = query
@@ -2483,7 +2531,7 @@ fi
 
         out = "\r\n\x1b[36mAvailable providers:\x1b[0m\r\n"
         self._provider_list = []
-        for i, (prov, label, info, fetched) in enumerate(available[:9]):
+        for i, (prov, label, _info, fetched) in enumerate(available[:9]):
             num = i + 1
             icon = "\x1b[32m●\x1b[0m" if prov != "custom" or fetched else "\x1b[33m●\x1b[0m"
             out += f"  \x1b[33m[{num}]\x1b[0m {icon} {label}\r\n"
@@ -2502,7 +2550,7 @@ fi
         self._exit_history_search_mode()
 
     def _select_provider_number(self, num):
-        for n, prov, fetched in self._provider_list:
+        for n, prov, _fetched in self._provider_list:
             if n == num:
                 self._provider_list = []
                 self._connect_to_provider(prov)
@@ -2748,11 +2796,6 @@ fi
     def _jump_next_quickmark(self):
         if not self._quickmarks:
             return
-        try:
-            _col, cur_row = self._vte.get_cursor_position()
-        except Exception:
-            cur_row = 0
-
         self._quickmark_index = (self._quickmark_index + 1) % len(self._quickmarks)
         target = self._quickmarks[self._quickmark_index]
         vadj = self._scroll.get_vadjustment()

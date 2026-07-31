@@ -2,6 +2,10 @@ import os
 import json
 import tempfile
 import threading
+from tpgk.logging_utils import get_logger
+
+
+logger = get_logger(__name__)
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "tpgk")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "settings.json")
@@ -203,7 +207,7 @@ class Settings:
             try:
                 cb()
             except Exception:
-                pass
+                logger.exception("settings_callback_failed")
 
     def _ensure_loaded(self):
         if self._loaded:

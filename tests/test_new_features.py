@@ -958,7 +958,7 @@ class TestSessionRestore:
         path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "__main__.py")
         with open(path) as f:
             content = f.read()
-        assert '_restore_session' in content
+        assert 'restore_session' in content
 
     def test_save_session_on_close(self):
         path = os.path.join(os.path.dirname(__file__), "..", "tpgk", "window.py")

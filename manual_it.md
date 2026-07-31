@@ -67,7 +67,6 @@ Terminal) per rilevare i titoli inviati via escape sequence.
 **Novita':** TPGK riconosce automaticamente gli URL nel terminale. Passa il mouse
 per vedere il cursore a mano, poi:
 - **Ctrl+Click** su un URL per aprirlo nel browser
-- **Click diretto** su un URL (senza selezione attiva) per aprirlo
 
 ---
 

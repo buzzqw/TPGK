@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
-import importlib
+import argparse
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -11,38 +11,78 @@ from gi.repository import Gtk, Gdk, Gio, GLib
 
 from tpgk.settings import Settings
 from tpgk.window import MainWindow
+from tpgk import __version__
+from tpgk.logging_utils import configure_logging
 
 
 GLib.set_prgname("tpgk")
 GLib.set_application_name("TPGK Terminal")
 
 
-def _reload_modules():
-    """Reload UI modules so code changes are picked up by new windows."""
-    import tpgk.window, tpgk.terminal, tpgk.icons, tpgk.history, tpgk.settings
-    importlib.reload(tpgk.settings)
-    importlib.reload(tpgk.history)
-    importlib.reload(tpgk.icons)
-    importlib.reload(tpgk.terminal)
-    importlib.reload(tpgk.window)
+def _parse_cli(argv):
+    parser = argparse.ArgumentParser(prog="tpgk", description="TPGK terminal emulator")
+    parser.add_argument("directory", nargs="?", help="Working directory for the new terminal")
+    parser.add_argument("-w", "--working-directory", dest="working_directory",
+                        help="Working directory for the new terminal")
+    parser.add_argument("--new-window", action="store_true", help="Open a new window")
+    parser.add_argument("--no-restore", action="store_true", help="Do not restore the last session")
+    parser.add_argument("-e", "--execute", nargs=argparse.REMAINDER,
+                        help="Run a command instead of the configured shell")
+    parser.add_argument("--version", action="store_true", help="Show the TPGK version")
+    options = parser.parse_args(argv)
+    if options.directory and options.working_directory:
+        parser.error("directory and --working-directory cannot be used together")
+    options.requested_dir = options.working_directory or options.directory
+    if options.requested_dir:
+        options.start_dir = os.path.abspath(os.path.expanduser(options.requested_dir))
+        if not os.path.isdir(options.start_dir):
+            parser.error(f"not a directory: {options.start_dir}")
+    else:
+        options.start_dir = os.getcwd()
+    if options.execute == []:
+        parser.error("--execute requires a command")
+    return options
 
 
 class TpgkApp(Gtk.Application):
-    def __init__(self, start_dir=None):
+    def __init__(self):
         super().__init__(application_id="com.buzzqw.tpgk",
-                         flags=Gio.ApplicationFlags.NON_UNIQUE)
+                         flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
         self._settings = Settings()
-        self._start_dir = start_dir
 
     def do_activate(self):
-        if os.environ.pop("TPGK_RELOAD_MODULES", None):
-            _reload_modules()
-            from tpgk.window import MainWindow as FreshMainWindow
-            win = FreshMainWindow(self, start_dir=self._start_dir)
-        else:
-            win = MainWindow(self, start_dir=self._start_dir)
+        windows = self.get_windows()
+        if windows:
+            windows[0].present()
+            return
+        self._open_window()
+
+    def _open_window(self, start_dir=None, command=None, restore_session=True):
+        win = MainWindow(self, start_dir=start_dir, command=command, restore_session=restore_session)
         self.add_window(win)
-        GLib.idle_add(win._restore_session)
+        win.present()
+        return win
+
+    def do_command_line(self, command_line):
+        try:
+            options = _parse_cli(command_line.get_arguments()[1:])
+        except SystemExit as error:
+            return int(error.code) if isinstance(error.code, int) else 2
+        if options.version:
+            print(f"TPGK {__version__}")
+            return 0
+
+        windows = self.get_windows()
+        explicit_open = bool(options.requested_dir or options.execute or options.new_window)
+        if windows and not explicit_open:
+            windows[0].present()
+            return 0
+        self._open_window(
+            start_dir=options.start_dir,
+            command=options.execute,
+            restore_session=not (options.no_restore or explicit_open),
+        )
+        return 0
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
@@ -69,10 +109,8 @@ class TpgkApp(Gtk.Application):
 
 
 def main():
-    start_dir = os.getcwd()
-    if len(sys.argv) > 1 and os.path.isdir(sys.argv[1]):
-        start_dir = sys.argv[1]
-    app = TpgkApp(start_dir=start_dir)
+    configure_logging()
+    app = TpgkApp()
     return app.run(sys.argv)
 
 

@@ -31,7 +31,7 @@ search, and a built-in notes system.
 - 8 color schemes: Dark, Light, Solarized Dark, Solarized Light,
   Gruvbox Dark, Monokai, Nord, Matrix
 - **Custom 16-color palette** editor with presets
-- **Clickable URLs** — Ctrl+Click or direct click to open in browser
+- **Clickable URLs** — Ctrl+Click to open in browser
 - **Command palette** — press `/` for interactive popup with fuzzy search
 
 ### AI Chat (built-in)
@@ -114,6 +114,17 @@ uv pip install requests
 # or
 source .venv/bin/activate && python -m tpgk
 ```
+
+### Command Line
+```bash
+tpgk /path/to/project                 # Open a terminal in a directory
+tpgk --new-window                     # Ask the running instance for a new window
+tpgk --no-restore                     # Start without restoring the last session
+tpgk --execute git status             # Run a command in a new terminal window
+```
+
+TPGK uses one application instance. A second invocation raises the existing
+window unless a directory, `--new-window`, or `--execute` is supplied.
 
 ---
 

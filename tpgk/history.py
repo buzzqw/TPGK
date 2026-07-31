@@ -1,7 +1,13 @@
 import os
 import sqlite3
+import time
 import datetime
 import threading
+
+from tpgk.logging_utils import get_logger
+
+
+logger = get_logger(__name__)
 
 HISTORY_DIR = os.path.join(os.path.expanduser("~"), ".config", "tpgk")
 HISTORY_DB = os.path.join(HISTORY_DIR, "history.db")
@@ -134,7 +140,7 @@ class HistoryManager:
             order_params.append(cwd)
 
         if len(pos) > 1:
-            instr_sum = " + ".join([f"INSTR(LOWER(command), ?)" for _ in pos])
+            instr_sum = " + ".join(["INSTR(LOWER(command), ?)" for _ in pos])
             order_parts.append(f"({instr_sum})")
             order_params.extend(t.lower() for t in pos)
 
@@ -168,7 +174,10 @@ class HistoryManager:
             return sqlite3.SQLITE_DENY
 
         try:
-            ro_conn.set_progress_handler(lambda: 2_000_000, 10000)
+            deadline = time.monotonic() + 2
+            # SQLite treats any non-zero result as an interruption request.
+            # Permit normal analytical queries while bounding hostile SQL.
+            ro_conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
             ro_conn.set_authorizer(authorizer)
             cur = ro_conn.execute(sql_stripped)
             rows = cur.fetchall()
@@ -190,12 +199,12 @@ class HistoryManager:
 
         first_term = parts[0]
         order_parts = [
-            f"CASE WHEN command LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END",
+            "CASE WHEN command LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END",
         ]
         order_params = [f"{self._like_escape(first_term)}%"]
 
         if len(parts) > 1:
-            instr_sum = " + ".join([f"INSTR(LOWER(command), ?)" for _ in parts])
+            instr_sum = " + ".join(["INSTR(LOWER(command), ?)" for _ in parts])
             order_parts.append(f"({instr_sum})")
             order_params.extend(t.lower() for t in parts)
 

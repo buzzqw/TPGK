@@ -65,7 +65,6 @@ sent via escape sequences.
 
 **New:** TPGK automatically detects URLs in the terminal. Hover to see a hand cursor, then:
 - **Ctrl+Click** a URL to open it in your browser
-- **Direct click** a URL (with no active selection) to open it
 
 ---
 

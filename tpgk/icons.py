@@ -8,7 +8,7 @@ no icon theme reliably ships under a single portable name.
 import cairo
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gdk, GdkPixbuf
+from gi.repository import Gtk, Gdk
 
 
 ICON_SIZE = 20  # a bit larger than the GTK default 16px for readability

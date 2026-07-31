@@ -70,14 +70,14 @@ class TestSettingsEdgeCases:
             assert isinstance(DEFAULTS[key], dict)
 
     def test_color_schemes_have_fg_bg(self):
-        for name, scheme in COLOR_SCHEMES.items():
+        for _name, scheme in COLOR_SCHEMES.items():
             assert "foreground" in scheme
             assert "background" in scheme
             assert scheme["foreground"].startswith("#")
             assert scheme["background"].startswith("#")
 
     def test_palette_color_count(self):
-        for name, palette in COLOR_PALETTES.items():
+        for _name, palette in COLOR_PALETTES.items():
             assert len(palette) == 16
             assert len([k for k in palette if k.startswith("bright")]) == 8
             assert len([k for k in palette if not k.startswith("bright")]) == 8
@@ -282,12 +282,12 @@ class TestAIClientEdgeCases:
                 assert field in info, f"{provider} missing {field}"
 
     def test_default_models_are_strings(self):
-        for provider, info in AIClient.PROVIDERS.items():
+        for _provider, info in AIClient.PROVIDERS.items():
             assert isinstance(info["default_model"], str)
             assert len(info["default_model"]) > 0
 
     def test_urls_are_valid(self):
-        for provider, info in AIClient.PROVIDERS.items():
+        for _provider, info in AIClient.PROVIDERS.items():
             assert info["url"].startswith("http")
 
     def test_claude_has_anthropic_headers(self):

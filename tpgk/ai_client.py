@@ -1,9 +1,16 @@
 import json
+import threading
 from typing import Generator
+from tpgk.logging_utils import get_logger
 
 # `requests` (and its urllib3/chardet dependency chain) takes ~140ms to import,
 # a large share of app startup. Since AI chat is opt-in, defer it until first use.
 _requests = None
+logger = get_logger(__name__)
+
+
+class AIRequestCancelled(Exception):
+    """Raised when the user cancels a streaming AI request."""
 
 
 def _requests_module():
@@ -53,6 +60,8 @@ class AIClient:
         self._protocol = info["protocol"]
         self._messages = []
         self._system_prompt = ""
+        self._active_response = None
+        self._response_lock = threading.Lock()
 
     def set_system_prompt(self, prompt: str):
         self._system_prompt = prompt
@@ -75,18 +84,18 @@ class AIClient:
                 self._messages.pop(0)
             raise
 
-    def chat_stream(self, message: str) -> Generator[str, None, None]:
+    def chat_stream(self, message: str, cancel_event=None) -> Generator[str, None, None]:
         has_system = any(m.get("role") == "system" for m in self._messages)
         if self._system_prompt and not has_system:
             self._messages.insert(0, {"role": "system", "content": self._system_prompt})
         self._messages.append({"role": "user", "content": message})
         try:
             if self._protocol == "claude":
-                yield from self._call_claude_stream()
+                yield from self._call_claude_stream(cancel_event)
             elif self._protocol == "gemini":
-                yield from self._call_gemini_stream(message)
+                yield from self._call_gemini_stream(message, cancel_event)
             else:
-                yield from self._call_openai_stream()
+                yield from self._call_openai_stream(cancel_event)
         except Exception:
             self._messages.pop()
             if self._system_prompt and not has_system and self._messages and self._messages[0].get("role") == "system":
@@ -95,6 +104,42 @@ class AIClient:
 
     def reset(self):
         self._messages = []
+
+    def cancel(self):
+        """Close the current response so a streaming worker can exit promptly."""
+        with self._response_lock:
+            response = self._active_response
+            self._active_response = None
+        if response is not None:
+            response.close()
+
+    def _check_cancelled(self, cancel_event):
+        if cancel_event is not None and cancel_event.is_set():
+            self.cancel()
+            raise AIRequestCancelled()
+
+    def _open_stream(self, cancel_event, *args, **kwargs):
+        self._check_cancelled(cancel_event)
+        try:
+            response = _requests_module().post(*args, **kwargs, stream=True, timeout=(10, 5))
+        except Exception:
+            self._check_cancelled(cancel_event)
+            raise
+        with self._response_lock:
+            self._active_response = response
+        self._check_cancelled(cancel_event)
+        try:
+            response.raise_for_status()
+        except Exception:
+            self._close_stream(response)
+            raise
+        return response
+
+    def _close_stream(self, response):
+        with self._response_lock:
+            if self._active_response is response:
+                self._active_response = None
+        response.close()
 
     def _call_openai_compatible(self) -> str:
         requests = _requests_module()
@@ -109,32 +154,35 @@ class AIClient:
         self._messages.append({"role": "assistant", "content": content})
         return content
 
-    def _call_openai_stream(self) -> Generator[str, None, None]:
-        requests = _requests_module()
+    def _call_openai_stream(self, cancel_event=None) -> Generator[str, None, None]:
         headers = {"Content-Type": "application/json"}
         if self.api_key and self._protocol != "ollama":
             headers["Authorization"] = f"Bearer {self.api_key}"
         payload = {"model": self.model, "messages": self._messages, "stream": True}
-        resp = requests.post(self.base_url, headers=headers, json=payload, stream=True, timeout=120)
-        resp.raise_for_status()
+        resp = self._open_stream(cancel_event, self.base_url, headers=headers, json=payload)
         resp.encoding = 'utf-8'
         full = ""
-        for line in resp.iter_lines(decode_unicode=True):
-            if not line or line.startswith(":") or not line.startswith("data: "):
-                continue
-            data_str = line[6:]
-            if data_str == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data_str)
-                delta = chunk["choices"][0].get("delta", {})
-                content = delta.get("content", "")
-                if content:
-                    full += content
-                    yield content
-            except (json.JSONDecodeError, KeyError, IndexError):
-                continue
-        self._messages.append({"role": "assistant", "content": full})
+        try:
+            for line in resp.iter_lines(decode_unicode=True):
+                self._check_cancelled(cancel_event)
+                if not line or line.startswith(":") or not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk["choices"][0].get("delta", {})
+                    content = delta.get("content", "")
+                    if content:
+                        full += content
+                        yield content
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+            self._check_cancelled(cancel_event)
+            self._messages.append({"role": "assistant", "content": full})
+        finally:
+            self._close_stream(resp)
 
     def _call_claude(self) -> str:
         requests = _requests_module()
@@ -157,8 +205,7 @@ class AIClient:
         self._messages.append({"role": "assistant", "content": content})
         return content
 
-    def _call_claude_stream(self) -> Generator[str, None, None]:
-        requests = _requests_module()
+    def _call_claude_stream(self, cancel_event=None) -> Generator[str, None, None]:
         headers = {"x-api-key": self.api_key, "anthropic-version": "2023-06-01",
                    "Content-Type": "application/json"}
         system = ""
@@ -171,41 +218,44 @@ class AIClient:
         payload = {"model": self.model, "max_tokens": 8192, "messages": msgs, "stream": True}
         if system:
             payload["system"] = system
-        resp = requests.post(self.base_url, headers=headers, json=payload, stream=True, timeout=120)
-        resp.raise_for_status()
+        resp = self._open_stream(cancel_event, self.base_url, headers=headers, json=payload)
         full = ""
         event_type = ""
-        for line in resp.iter_lines(decode_unicode=True):
-            if not line:
-                event_type = ""
-                continue
-            if line.startswith("event: "):
-                event_type = line[7:].strip()
-                continue
-            if not line.startswith("data: "):
-                continue
-            data_str = line[6:]
-            # Fix #11b: handle SSE error events (previously silently ignored by continue)
-            if event_type == "error":
+        try:
+            for line in resp.iter_lines(decode_unicode=True):
+                self._check_cancelled(cancel_event)
+                if not line:
+                    event_type = ""
+                    continue
+                if line.startswith("event: "):
+                    event_type = line[7:].strip()
+                    continue
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if event_type == "error":
+                    try:
+                        err = json.loads(data_str)
+                        raise RuntimeError(err.get("error", {}).get("message", data_str))
+                    except (json.JSONDecodeError, KeyError):
+                        raise RuntimeError(data_str)
                 try:
-                    err = json.loads(data_str)
-                    raise RuntimeError(err.get("error", {}).get("message", data_str))
+                    event = json.loads(data_str)
+                    if event.get("type") == "content_block_delta":
+                        text = event.get("delta", {}).get("text", "")
+                        if text:
+                            full += text
+                            yield text
+                    elif event.get("type") == "message_stop":
+                        break
+                    elif event.get("type") == "error":
+                        raise RuntimeError(event.get("error", {}).get("message", str(event)))
                 except (json.JSONDecodeError, KeyError):
-                    raise RuntimeError(data_str)
-            try:
-                event = json.loads(data_str)
-                if event.get("type") == "content_block_delta":
-                    text = event.get("delta", {}).get("text", "")
-                    if text:
-                        full += text
-                        yield text
-                elif event.get("type") == "message_stop":
-                    break
-                elif event.get("type") == "error":
-                    raise RuntimeError(event.get("error", {}).get("message", str(event)))
-            except (json.JSONDecodeError, KeyError):
-                continue
-        self._messages.append({"role": "assistant", "content": full})
+                    continue
+            self._check_cancelled(cancel_event)
+            self._messages.append({"role": "assistant", "content": full})
+        finally:
+            self._close_stream(resp)
 
     def _call_gemini(self, message: str) -> str:
         requests = _requests_module()
@@ -229,8 +279,7 @@ class AIClient:
         self._messages.append({"role": "assistant", "content": content})
         return content
 
-    def _call_gemini_stream(self, message: str) -> Generator[str, None, None]:
-        requests = _requests_module()
+    def _call_gemini_stream(self, message: str, cancel_event=None) -> Generator[str, None, None]:
         # Fix #19: real SSE streaming via streamGenerateContent?alt=sse
         url = self.base_url.replace("{model}", self.model)
         if ":streamGenerateContent" not in url:
@@ -246,23 +295,26 @@ class AIClient:
         payload = {"contents": contents, "generationConfig": {
             "temperature": 0.7, "maxOutputTokens": 8192,
         }}
-        resp = requests.post(url, headers=headers, params=params, json=payload,
-                             stream=True, timeout=120)
-        resp.raise_for_status()
+        resp = self._open_stream(cancel_event, url, headers=headers, params=params, json=payload)
         full = ""
-        for line in resp.iter_lines(decode_unicode=True):
-            if not line or not line.startswith("data: "):
-                continue
-            data_str = line[6:]
-            try:
-                event = json.loads(data_str)
-                text = event["candidates"][0]["content"]["parts"][0]["text"]
-                if text:
-                    full += text
-                    yield text
-            except (json.JSONDecodeError, KeyError, IndexError):
-                continue
-        self._messages.append({"role": "assistant", "content": full})
+        try:
+            for line in resp.iter_lines(decode_unicode=True):
+                self._check_cancelled(cancel_event)
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                try:
+                    event = json.loads(data_str)
+                    text = event["candidates"][0]["content"]["parts"][0]["text"]
+                    if text:
+                        full += text
+                        yield text
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+            self._check_cancelled(cancel_event)
+            self._messages.append({"role": "assistant", "content": full})
+        finally:
+            self._close_stream(resp)
 
     @staticmethod
     def fetch_models(provider: str, api_key: str = "", base_url: str = ""):
@@ -298,7 +350,7 @@ class AIClient:
                     data = resp.json()
                     return sorted([m.get("id", str(m)) for m in data.get("data", [])])
         except Exception:
-            pass
+            logger.exception("ai_models_fetch_failed provider=%s", provider)
         return []
 
     @staticmethod
@@ -319,8 +371,10 @@ class AIClient:
                         if r.status_code == 200:
                             return True
                     except Exception:
+                        logger.debug("ai_provider_ping_attempt_failed provider=%s", provider,
+                                     exc_info=True)
                         continue
                 return False
         except Exception:
-            pass
+            logger.exception("ai_provider_ping_failed provider=%s", provider)
         return False

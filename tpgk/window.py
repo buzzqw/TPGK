@@ -303,7 +303,7 @@ class _DetachedWindow(Gtk.Window):
 
     def _populate_menus(self):
         menus = self._build_menu()
-        for btn, (label, menu) in zip(self._menu_buttons, menus):
+        for btn, (_label, menu) in zip(self._menu_buttons, menus, strict=True):
             btn.set_popup(menu)
         self._menu_buttons = []
         return False
@@ -481,10 +481,12 @@ class _DetachedWindow(Gtk.Window):
 
 
 class MainWindow(Gtk.ApplicationWindow):
-    def __init__(self, app, start_dir=None):
+    def __init__(self, app, start_dir=None, command=None, restore_session=True):
         super().__init__(application=app)
         self._settings = Settings()
         self._start_dir = start_dir
+        self._start_command = command
+        self._restore_on_start = restore_session
 
         self.set_title("TPGK Terminal")
         cols = self._settings.get("terminal_columns", 80)
@@ -563,7 +565,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self._settings.connect(self._apply_window_size)
 
         GLib.idle_add(self._fix_paned_position)
-        GLib.idle_add(lambda: self._add_new_tab(cwd=self._start_dir))
+        GLib.idle_add(self._initialize_terminal)
+
+    def _initialize_terminal(self):
+        if self._restore_on_start and self._restore_session():
+            return False
+        self._add_new_tab(cwd=self._start_dir, command=self._start_command)
+        return False
 
     def _apply_window_size(self):
         cols = self._settings.get("terminal_columns", 80)
@@ -836,7 +844,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _populate_menus(self):
         menus = self._build_menu()
-        for btn, (label, menu) in zip(self._menu_buttons, menus):
+        for btn, (_label, menu) in zip(self._menu_buttons, menus, strict=True):
             btn.set_popup(menu)
         self._menu_buttons = []
         if hasattr(self, '_profiles_menu'):
@@ -869,7 +877,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     # ── Split modes ──────────────────────────────────────────
 
-    def _set_split(self, mode):
+    def _set_split(self, mode, create_tab=True):
         if getattr(self, '_splitting', False):
             return
         self._splitting = True
@@ -885,7 +893,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._split_h_act.set_active(False)
             elif mode == "vertical":
                 self._paned.set_orientation(Gtk.Orientation.HORIZONTAL)
-                if self._notebook2.get_n_pages() == 0:
+                if self._notebook2.get_n_pages() == 0 and create_tab:
                     self._notebook2.show()
                     self._add_new_tab(target_notebook=self._notebook2)
                 else:
@@ -897,7 +905,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._paned.set_position(max(200, w // 2))
             elif mode == "horizontal":
                 self._paned.set_orientation(Gtk.Orientation.VERTICAL)
-                if self._notebook2.get_n_pages() == 0:
+                if self._notebook2.get_n_pages() == 0 and create_tab:
                     self._notebook2.show()
                     self._add_new_tab(target_notebook=self._notebook2)
                 else:
@@ -935,12 +943,11 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         focus = self.get_focus()
         target = self._notebook2
-        current = self._notebook
         if focus:
             p = focus.get_parent()
             while p:
                 if p is self._notebook2:
-                    target, current = self._notebook, self._notebook2
+                    target = self._notebook
                     break
                 if p is self._notebook:
                     break
@@ -1012,18 +1019,20 @@ class MainWindow(Gtk.ApplicationWindow):
 
     # ── Tab management ───────────────────────────────────────
 
-    def _add_new_tab(self, cwd=None, target_notebook=None):
+    def _add_new_tab(self, cwd=None, target_notebook=None, base_title=None,
+                     display_title=None, command=None):
         term = TerminalBox(self)
 
-        base_name = self._settings.get("tab_title", "Terminal")
-        base_title = f"{base_name} {self._next_tab_number}"
+        if base_title is None:
+            base_name = self._settings.get("tab_title", "Terminal")
+            base_title = f"{base_name} {self._next_tab_number}"
         self._next_tab_number += 1
         self._tab_base_titles[term] = base_title
 
         nb = target_notebook or self._active_notebook()
 
         lbl_box, lbl = self._make_tab_label(
-            base_title, lambda t=term: self._close_tab(t), term=term)
+            display_title or base_title, lambda t=term: self._close_tab(t), term=term)
         self._tab_labels[term] = (lbl_box, lbl)
 
         idx = nb.append_page(term, lbl_box)
@@ -1033,7 +1042,7 @@ class MainWindow(Gtk.ApplicationWindow):
         nb.set_current_page(idx)
         self._update_tabs_menu()
 
-        term.launch(cwd)
+        term.launch(cwd, command)
         term.show_all()
         GLib.idle_add(term._vte.grab_focus)
 
@@ -1202,7 +1211,7 @@ class MainWindow(Gtk.ApplicationWindow):
         for child in menu.get_children():
             menu.remove(child)
 
-        from tpgk.profiles import list_profiles, apply_profile, save_profile, delete_profile
+        from tpgk.profiles import list_profiles, apply_profile, delete_profile
 
         active = self._settings.get("active_profile", "")
         profiles = list_profiles()
@@ -1236,7 +1245,7 @@ class MainWindow(Gtk.ApplicationWindow):
         for child in menu.get_children():
             menu.remove(child)
 
-        from tpgk.session import list_sessions, load_state, restore_window, delete_session
+        from tpgk.session import list_sessions, delete_session
 
         sessions = list_sessions()
 
@@ -1309,9 +1318,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._add_new_tab()
 
     def _on_new_window(self, *a):
-        env = os.environ.copy()
-        env["TPGK_RELOAD_MODULES"] = "1"
-        subprocess.Popen([sys.executable, "-m", "tpgk"], env=env, start_new_session=True)
+        subprocess.Popen([sys.executable, "-m", "tpgk", "--new-window"], start_new_session=True)
 
     def _on_open_fm(self, *a):
         fm = _detect_file_manager(self._settings)
@@ -1458,8 +1465,13 @@ class MainWindow(Gtk.ApplicationWindow):
             name = entry.get_text().strip()
             if name:
                 from tpgk.profiles import save_profile
-                save_profile(name, self._settings._data)
-                self._settings.set("active_profile", name)
+                try:
+                    if save_profile(name, self._settings._data):
+                        self._settings.set("active_profile", name)
+                    else:
+                        self._show_error("Could not save the profile. See the application log for details.")
+                except ValueError as error:
+                    self._show_error(str(error))
         dialog.destroy()
 
     def _save_session_dialog(self):
@@ -1476,7 +1488,17 @@ class MainWindow(Gtk.ApplicationWindow):
         if dialog.run() == Gtk.ResponseType.OK:
             name = entry.get_text().strip()
             if name:
-                self._save_session_named(name)
+                try:
+                    if not self._save_session_named(name):
+                        self._show_error("Could not save the session. See the application log for details.")
+                except ValueError as error:
+                    self._show_error(str(error))
+        dialog.destroy()
+
+    def _show_error(self, message):
+        dialog = Gtk.MessageDialog(self, Gtk.DialogFlags.MODAL, Gtk.MessageType.ERROR,
+                                   Gtk.ButtonsType.OK, message)
+        dialog.run()
         dialog.destroy()
 
     def _set_encoding(self, encoding: str):
@@ -1516,7 +1538,8 @@ class MainWindow(Gtk.ApplicationWindow):
             p = focus.get_parent()
             while p:
                 if p is self._notebook2:
-                    nb = self._notebook2; break
+                    nb = self._notebook2
+                    break
                 if p is self._notebook:
                     break
                 p = p.get_parent() if hasattr(p, 'get_parent') else None
@@ -1532,7 +1555,8 @@ class MainWindow(Gtk.ApplicationWindow):
             p = focus.get_parent()
             while p:
                 if p is self._notebook2:
-                    nb = self._notebook2; break
+                    nb = self._notebook2
+                    break
                 if p is self._notebook:
                     break
                 p = p.get_parent() if hasattr(p, 'get_parent') else None
@@ -1548,7 +1572,8 @@ class MainWindow(Gtk.ApplicationWindow):
             p = focus.get_parent()
             while p:
                 if p is self._notebook2:
-                    nb = self._notebook2; break
+                    nb = self._notebook2
+                    break
                 if p is self._notebook:
                     break
                 p = p.get_parent() if hasattr(p, 'get_parent') else None
@@ -1644,7 +1669,9 @@ class MainWindow(Gtk.ApplicationWindow):
                 nb.get_nth_page(i).terminate()
         self._settings.disconnect(self._apply_tab_colors)
         self._settings.disconnect(self._apply_window_size)
-        self._save_session()
+        app = self.get_application()
+        if not app or len(app.get_windows()) <= 1:
+            self._save_session()
         self.destroy()
         return True
 
@@ -1695,23 +1722,22 @@ class MainWindow(Gtk.ApplicationWindow):
     def _save_session(self):
         if self._settings.get("session_restore", True):
             from tpgk.session import save_state
-            save_state(self, "last")
+            return save_state(self, "last")
+        return True
 
     def _restore_session(self):
         if not self._settings.get("session_restore", True):
-            return
+            return False
         from tpgk.session import load_state, restore_window
         data = load_state("last")
         if data:
             restore_window(self, data)
-            if data.get("tabs_left"):
-                default_term = self._notebook.get_nth_page(0)
-                if default_term is not None:
-                    self._close_tab(default_term)
+            return True
+        return False
 
     def _save_session_named(self, name):
         from tpgk.session import save_state
-        save_state(self, name)
+        return save_state(self, name)
 
     def _load_session_named(self, name):
         from tpgk.session import load_state, restore_window
