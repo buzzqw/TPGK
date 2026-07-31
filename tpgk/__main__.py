@@ -47,7 +47,8 @@ def _parse_cli(argv):
 class TpgkApp(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="com.buzzqw.tpgk",
-                         flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+                         flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE
+                         | Gio.ApplicationFlags.NON_UNIQUE)
         self._settings = Settings()
 
     def do_activate(self):

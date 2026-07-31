@@ -1651,7 +1651,7 @@ class MainWindow(Gtk.ApplicationWindow):
         # a second time.
         if getattr(self, "_closing", False):
             return True
-        if self._settings.get("confirm_close", True):
+        if self._settings.get("confirm_close", True) and not getattr(self, "_skip_close_confirm", False):
             self._closing = True
             dialog = Gtk.MessageDialog(
                 self, Gtk.DialogFlags.MODAL,
@@ -1694,7 +1694,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self._add_new_tab()
 
     def close_tab_signal(self, term=None):
+        # The shell exited on its own (e.g. the user typed "exit"): the
+        # process is already gone, so if this was the last tab don't ask
+        # for confirmation when it closes the window.
+        self._skip_close_confirm = True
         self._close_tab(term)
+        self._skip_close_confirm = False
 
     def close_window_signal(self):
         self._on_close()
