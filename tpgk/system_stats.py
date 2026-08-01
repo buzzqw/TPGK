@@ -11,13 +11,18 @@ def _mb(val: int) -> str:
 
 def collect(is_ssh: bool = False) -> str:
     """Return a lightweight one-line stats string (CPU / RAM / Disk)."""
-    prefix = "  [SSH] " if is_ssh else "  "
+    if is_ssh:
+        return ssh_placeholder()
     cpu = psutil.cpu_percent(interval=None)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
 
     return (
-        f"{prefix}CPU {cpu:5.1f}%  "
+        f"  CPU {cpu:5.1f}%  "
         f"RAM {_mb(mem.used)}/{_mb(mem.total)} ({mem.percent:.0f}%)  "
         f"Disk {_mb(disk.used)}/{_mb(disk.total)} ({disk.percent:.0f}%)"
     )
+
+
+def ssh_placeholder() -> str:
+    return "  [SSH] Remote session"

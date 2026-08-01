@@ -380,10 +380,24 @@ class _DetachedWindow(Gtk.Window):
             self._stats_source_id = 0
 
     def _refresh_stats(self):
-        from tpgk.system_stats import collect
+        from tpgk.system_stats import collect, ssh_placeholder
         term = self._terminal if self._terminal else None
-        is_ssh = term.is_ssh() if term else False
-        stats = collect(is_ssh)
+        if term is None:
+            self._stats_label.set_text("")
+            return True
+        if term.is_ssh_client():
+            stats = term.get_remote_stats()
+            if not stats:
+                stats = ssh_placeholder()
+            self._stats_label.set_text(stats)
+            return True
+        if term.is_ssh():
+            stats = collect()
+            self._stats_label.set_text(f"  [SSH] {stats.strip()}")
+            return True
+        stats = term.get_osc133_stats()
+        if not stats:
+            stats = collect()
         self._stats_label.set_text(stats)
         return True
 
@@ -1404,10 +1418,24 @@ class MainWindow(Gtk.ApplicationWindow):
             self._stats_source_id = 0
 
     def _refresh_stats(self):
-        from tpgk.system_stats import collect
+        from tpgk.system_stats import collect, ssh_placeholder
         term = self._current_terminal()
-        is_ssh = term.is_ssh() if term else False
-        stats = collect(is_ssh)
+        if term is None:
+            self._stats_label.set_text("")
+            return True
+        if term.is_ssh_client():
+            stats = term.get_remote_stats()
+            if not stats:
+                stats = ssh_placeholder()
+            self._stats_label.set_text(stats)
+            return True
+        if term.is_ssh():
+            stats = collect()
+            self._stats_label.set_text(f"  [SSH] {stats.strip()}")
+            return True
+        stats = term.get_osc133_stats()
+        if not stats:
+            stats = collect()
         self._stats_label.set_text(stats)
         return True
 

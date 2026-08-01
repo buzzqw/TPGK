@@ -219,6 +219,9 @@ class TerminalBox(Gtk.Box):
         self._pid = -1
         self._pty_fd = -1
         self._osc133_stats = ""
+        self._remote_stats_cache = ""
+        self._remote_stats_ts = -1000.0
+        self._remote_stats_running = False
 
         self._osc133_markers = []
         self._osc133_rfd = -1
@@ -504,7 +507,15 @@ __tpgk_osc133_precmd() {
     __tpgk_osc133_stats
 }
 
+# Enable SSH ControlMaster so TPGK can show live remote system stats.
+# The shared socket lets a background "ssh -S ..." call reuse
+# authentication established by the interactive session.
+__tpgk_ssh() {
+    command ssh -o ControlMaster=auto -o "ControlPath=/tmp/tpgk-ssh-$$" "$@"
+}
+
 if [ -n "$BASH_VERSION" ]; then
+    alias ssh='__tpgk_ssh'
     trap '__tpgk_osc133_preexec' DEBUG
     # PROMPT_COMMAND may be an array (bash >= 5.1 - the default on distros
     # that chain their own prompt hooks, e.g. systemd/VTE integration
@@ -542,6 +553,7 @@ elif [ -n "$ZSH_VERSION" ]; then
     }
     add-zsh-hook preexec __tpgk_zsh_preexec
     add-zsh-hook precmd __tpgk_zsh_precmd
+    alias ssh='__tpgk_ssh'
     printf '\033]133;A\007'
     __tpgk_osc133_notify A
     printf '\033]7;%s\007' "file://$PWD"
@@ -675,9 +687,152 @@ fi
         try:
             with open(f"/proc/{self._pid}/environ", "rb") as f:
                 env = f.read()
-            return b"SSH_CONNECTION" in env or b"SSH_TTY" in env or b"SSH_CLIENT" in env
+            if b"SSH_CONNECTION" in env or b"SSH_TTY" in env or b"SSH_CLIENT" in env:
+                return True
         except (OSError, PermissionError):
-            return False
+            pass
+        target = self._get_ssh_target()
+        return target is not None
+
+    def is_ssh_client(self):
+        return self._get_ssh_target() is not None
+
+    def _get_ssh_target(self):
+        if self._pid <= 0:
+            return None
+        try:
+            children_path = f"/proc/{self._pid}/task/{self._pid}/children"
+            with open(children_path, "r") as f:
+                children = f.read().strip().split()
+            for child_pid in children:
+                try:
+                    with open(f"/proc/{child_pid}/comm", "r") as f:
+                        comm = f.read().strip()
+                    if comm != "ssh":
+                        continue
+                    with open(f"/proc/{child_pid}/cmdline", "rb") as f:
+                        raw = f.read()
+                    if not raw:
+                        continue
+                    args = raw.split(b"\x00")
+                    target = None
+                    for arg in args[1:]:
+                        arg_s = arg.decode("utf-8", errors="replace")
+                        if not arg_s or arg_s.startswith("-"):
+                            continue
+                        if "@" in arg_s:
+                            return arg_s
+                        target = arg_s
+                    return target
+                except (OSError, PermissionError):
+                    continue
+        except (OSError, PermissionError):
+            pass
+        return None
+
+    def _find_ssh_control_socket(self):
+        target = self._get_ssh_target()
+        if not target:
+            return None
+        tpgk_socket = f"/tmp/tpgk-ssh-{self._pid}"
+        if os.path.exists(tpgk_socket):
+            return tpgk_socket
+        try:
+            config_path = os.path.join(os.path.expanduser("~"), ".ssh", "config")
+            ctl_path = None
+            if os.path.exists(config_path):
+                with open(config_path) as f:
+                    content = f.read()
+                import re
+                m = re.search(r'controlpath\s+(.+)', content, re.IGNORECASE)
+                if m:
+                    ctl_path = m.group(1).strip()
+            if not ctl_path:
+                return None
+            ctl_path = ctl_path.replace("%r", target.split("@")[0] if "@" in target else os.environ.get("USER", ""))
+            ctl_path = ctl_path.replace("%h", target.split("@")[-1])
+            ctl_path = ctl_path.replace("%p", "22")
+            ctl_path = os.path.expanduser(ctl_path)
+            if os.path.exists(ctl_path):
+                return ctl_path
+        except OSError:
+            pass
+        return None
+
+    def get_remote_stats(self):
+        import time
+        target = self._get_ssh_target()
+        if not target:
+            return ""
+        now = time.monotonic()
+        if self._remote_stats_cache is not None and (now - self._remote_stats_ts) < 15.0:
+            return self._remote_stats_cache if self._remote_stats_cache != "__nokeys__" else ""
+        cmd = (
+            "cat /proc/loadavg 2>/dev/null; "
+            "awk '/^MemTotal/{t=$2}/^MemAvailable/{a=$2}"
+            "END{printf \"%d %d\\n\",(t-a)*1024,t*1024}' /proc/meminfo 2>/dev/null; "
+            "df -B1 / 2>/dev/null | awk 'NR==2{printf \"%d %d\\n\",$3,$2}'"
+        )
+        ssh_cmd = ["ssh", "-o", "ConnectTimeout=3",
+                   "-o", "StrictHostKeyChecking=accept-new",
+                   "-o", "PreferredAuthentications=publickey,keyboard-interactive",
+                   "-o", "PasswordAuthentication=no", "-o", "BatchMode=yes",
+                   target, cmd]
+        ctl_socket = self._find_ssh_control_socket()
+        if ctl_socket:
+            ssh_cmd = ["ssh", "-S", ctl_socket, "-o", "ConnectTimeout=2",
+                       "-o", "StrictHostKeyChecking=accept-new", target, cmd]
+        try:
+            proc = subprocess.run(
+                ssh_cmd, capture_output=True, text=True, timeout=5,
+                env={**os.environ, "SSH_ASKPASS": "true", "DISPLAY": ""})
+            if proc.returncode != 0 or not proc.stdout.strip():
+                if b"Permission denied" in proc.stderr.encode():
+                    self._remote_stats_cache = "__nokeys__"
+                    self._remote_stats_ts = now
+                else:
+                    self._remote_stats_cache = ""
+                    self._remote_stats_ts = now
+                return ""
+            lines = proc.stdout.strip().splitlines()
+            if len(lines) < 3:
+                self._remote_stats_cache = ""
+                self._remote_stats_ts = now
+                return ""
+            load_parts = lines[0].split()
+            if len(load_parts) < 1:
+                self._remote_stats_cache = ""
+                self._remote_stats_ts = now
+                return ""
+            cpu = float(load_parts[0]) * 100
+            mem_parts = lines[1].split()
+            if len(mem_parts) < 2:
+                self._remote_stats_cache = ""
+                self._remote_stats_ts = now
+                return ""
+            mem_used = int(mem_parts[0])
+            mem_total = int(mem_parts[1])
+            disk_parts = lines[2].split()
+            if len(disk_parts) < 2:
+                self._remote_stats_cache = ""
+                self._remote_stats_ts = now
+                return ""
+            disk_used = int(disk_parts[0])
+            disk_total = int(disk_parts[1])
+        except (ValueError, subprocess.TimeoutExpired, OSError):
+            self._remote_stats_cache = ""
+            self._remote_stats_ts = now
+            return ""
+        mem_pct = (mem_used / mem_total * 100) if mem_total > 0 else 0
+        disk_pct = (disk_used / disk_total * 100) if disk_total > 0 else 0
+        result = (
+            f"  [SSH] CPU {cpu:5.1f}%  "
+            f"RAM {self._format_bytes(mem_used)}/{self._format_bytes(mem_total)} ({mem_pct:.0f}%)  "
+            f"Disk {self._format_bytes(disk_used)}/{self._format_bytes(disk_total)} ({disk_pct:.0f}%)"
+        )
+        self._remote_stats_cache = result
+        self._remote_stats_ts = now
+        return result
 
     def _is_echo_on(self):
         if self._pty_fd < 0:
