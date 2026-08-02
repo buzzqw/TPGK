@@ -233,6 +233,18 @@ class SettingsDialog(Gtk.Dialog):
         self._chk_bell_notify.set_tooltip_text("Show desktop notification when a command completes (requires OSC 133 shell integration)")
         row = self._row(grid, row, "Notify on command completion:", self._chk_bell_notify)
 
+        row += 1
+        row = self._section(grid, row, "Keyboard Modes")
+        self._chk_hint_mode = Gtk.CheckButton()
+        self._chk_hint_mode.set_active(self._settings.get("hint_mode_enabled", True))
+        self._chk_hint_mode.set_tooltip_text("Ctrl+Shift+H: highlight URLs, paths and git SHAs with keyboard-selectable labels")
+        row = self._row(grid, row, "Hint mode:", self._chk_hint_mode)
+
+        self._chk_vi_copy = Gtk.CheckButton()
+        self._chk_vi_copy.set_active(self._settings.get("vi_copy_mode_enabled", False))
+        self._chk_vi_copy.set_tooltip_text("Ctrl+Shift+Y: VI-style copy mode (hjkl scroll, v select, y yank, Esc exit)")
+        row = self._row(grid, row, "VI copy mode:", self._chk_vi_copy)
+
         sw.add(grid)
         return sw
 
@@ -815,6 +827,8 @@ class SettingsDialog(Gtk.Dialog):
         s.set("undercurl_style", self._combo_undercurl.get_active_text() or "single")
         s.set("session_restore", self._chk_session_restore.get_active())
         s.set("bell_notification", self._chk_bell_notify.get_active())
+        s.set("hint_mode_enabled", self._chk_hint_mode.get_active())
+        s.set("vi_copy_mode_enabled", self._chk_vi_copy.get_active())
 
         palette = {key: btn._hex for key, btn in self._palette_btns.items()}
         scheme_name = self._combo_scheme.get_active_text() or "Dark (Default)"

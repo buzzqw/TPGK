@@ -23,6 +23,23 @@ TPGK_COMMANDS = ["history", "ai", "connect", "wnotes", "onotes", "learn", "optim
 _TPGK_PREFIXES = ("/ai", "/history", "/wnotes", "/onotes", "/learn", "/optimize", "/connect", "/help", "/clear", "/cls")
 logger = get_logger(__name__)
 
+_HINT_CHARS = "asdfghjklqwertyuiopzxcvbnm"
+
+_HINT_URL_RE = re.compile(
+    r'(https?://|ssh://|ftp://|git@|www\.)[\w.\-_~:/?#\[\]@!$&\'()*+,;=%]+',
+    re.IGNORECASE)
+
+_HINT_PATH_RE = re.compile(
+    r'(~?/[\w.\-~+#@!]{2,}(?:/[\w.\-~+#@!]+)*/?)'
+    r'|(\./[\w.\-~+#@!]{1,}(?:/[\w.\-~+#@!]+)*/?)')
+
+_HINT_GIT_SHA_RE = re.compile(
+    r'\b([0-9a-f]{40}|[0-9a-f]{7,39})\b',
+    re.IGNORECASE)
+
+_HINT_IP_RE = re.compile(
+    r'\b((?:\d{1,3}\.){3}\d{1,3})\b')
+
 
 class TerminalBox(Gtk.Box):
     def __init__(self, window):
@@ -137,6 +154,17 @@ class TerminalBox(Gtk.Box):
         self._search_revealer.set_reveal_child(False)
         self._overlay.add_overlay(self._search_revealer)
 
+        self._hints_fixed = Gtk.Fixed()
+        self._hints_fixed.set_no_show_all(True)
+        self._hints_fixed.hide()
+        self._overlay.add_overlay(self._hints_fixed)
+
+        self._vi_overlay_area = Gtk.DrawingArea()
+        self._vi_overlay_area.set_no_show_all(True)
+        self._vi_overlay_area.hide()
+        self._vi_overlay_area.connect("draw", self._draw_vi_overlay)
+        self._overlay.add_overlay(self._vi_overlay_area)
+
         search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         search_box.set_size_request(-1, 32)
         search_frame = Gtk.Frame()
@@ -241,6 +269,17 @@ class TerminalBox(Gtk.Box):
         self._quickmarks = []
         self._quickmark_index = -1
         self._bell_notify_cmd_running = False
+
+        self._hints_active = False
+        self._hints_buffer = ""
+        self._hints_map = {}
+
+        self._vi_copy_active = False
+        self._vi_visual_active = False
+        self._vi_selection_start = -1
+        self._vi_selection_end = -1
+        self._vi_last_key = None
+        self._vi_last_key_time = 0
 
         self._undercurl_provider = Gtk.CssProvider()
         ctx = self._vte.get_style_context()
@@ -1422,7 +1461,12 @@ fi
         if (not self._input_shadow and self._shadow_anchor is None
                 and not self._ai_mode and not self._cmd_bar_visible
                 and not self._history_search_mode and not self._async_pending
-                and not self._provider_list and not self._model_list):
+                and not self._provider_list and not self._model_list
+                and not self._hints_active and not self._vi_copy_active):
+            try:
+                self._shadow_anchor = self._vte.get_cursor_position()
+            except Exception:
+                self._shadow_anchor = None
             # The very first keystroke of a fresh command line (whatever it
             # is - a printable char, an Up arrow to recall shell history, a
             # paste) finds the cursor sitting right after the shell's own
@@ -1436,6 +1480,16 @@ fi
                 self._shadow_anchor = None
 
         if ctrl and shift:
+            if self._hints_active:
+                if key == Gdk.KEY_H or key == Gdk.KEY_h:
+                    self._deactivate_hints()
+                    return True
+                return True
+            if self._vi_copy_active:
+                if key == Gdk.KEY_Y or key == Gdk.KEY_y:
+                    self._deactivate_vi_copy()
+                    return True
+                return True
             if key == Gdk.KEY_C or key == Gdk.KEY_c:
                 self.copy()
                 return True
@@ -1494,6 +1548,22 @@ fi
             if key == Gdk.KEY_P or key == Gdk.KEY_p:
                 self._show_command_bar()
                 return True
+            if key == Gdk.KEY_H or key == Gdk.KEY_h:
+                if self._settings.get("hint_mode_enabled", True):
+                    self._activate_hints()
+                return True
+            if key == Gdk.KEY_Y or key == Gdk.KEY_y:
+                if self._settings.get("vi_copy_mode_enabled", False):
+                    self._activate_vi_copy()
+                return True
+
+        if self._hints_active:
+            self._handle_hint_key(event)
+            return True
+
+        if self._vi_copy_active:
+            self._handle_vi_copy_key(event)
+            return True
 
         if ctrl and not shift:
             if key == Gdk.KEY_R or key == Gdk.KEY_r:
@@ -1833,6 +1903,11 @@ fi
             return True
 
         text = event.string
+        slash_search = text == "/" or text == "?"
+        if slash_search and not ctrl and not alt and not self._scroll_follow:
+            if not self._input_shadow and not self._ai_mode and not self._cmd_bar_visible:
+                self._show_search()
+                return True
         if text and len(text) == 1 and ord(text[0]) >= 0x20:
             self._input_shadow += text
 
@@ -2822,6 +2897,9 @@ fi
             "  \x1b[90mCtrl+Shift+M\x1b[0m           Set quickmark\r\n"
             "  \x1b[90mCtrl+M\x1b[0m                  Jump to next quickmark\r\n"
             "  \x1b[90mCtrl+Shift+B\x1b[0m           Toggle broadcast input\r\n"
+            "  \x1b[90mCtrl+Shift+H\x1b[0m           Hint mode (select URLs/paths/commits with keyboard)\r\n"
+            "  \x1b[90mCtrl+Shift+Y\x1b[0m           VI copy mode (hjkl scroll, v select, y yank)\r\n"
+            "  \x1b[90m/ or ?\x1b[0m                 Search scrollback (when viewing history)\r\n"
             "\x1b[36m─────────────────────────\x1b[0m\r\n"
         )
         self._vte.feed(help_text.encode())
@@ -2976,6 +3054,354 @@ fi
                     except Exception:
                         pass
         return True
+
+    def _is_at_prompt(self):
+        vadj = self._scroll.get_vadjustment()
+        if not vadj:
+            return True
+        bottom = max(0.0, vadj.get_upper() - vadj.get_page_size())
+        return vadj.get_value() >= bottom - 0.5
+
+    def _cell_to_overlay_coords(self, col, row):
+        cw = self._vte.get_char_width()
+        ch = self._vte.get_char_height()
+        vadj = self._scroll.get_vadjustment()
+        scroll_row = vadj.get_value() if vadj else 0.0
+        ok, vx, vy = self._vte.translate_coordinates(self._overlay, 0, 0)
+        padding = self._settings.get("window_padding_horizontal", 2)
+        cell_x = padding + 8 + col * cw
+        cell_y = (row - scroll_row) * ch
+        return (vx + cell_x, vy + cell_y)
+
+    @staticmethod
+    def _generate_hint_labels(count):
+        labels = []
+        chars = _HINT_CHARS
+        for c in chars:
+            labels.append(c)
+            if len(labels) >= count:
+                return labels[:count]
+        for c1 in chars:
+            for c2 in chars:
+                labels.append(c1 + c2)
+                if len(labels) >= count:
+                    return labels[:count]
+        for c1 in chars:
+            for c2 in chars:
+                for c3 in chars:
+                    labels.append(c1 + c2 + c3)
+                    if len(labels) >= count:
+                        return labels[:count]
+        return labels[:count]
+
+    def _activate_hints(self):
+        if self._hints_active:
+            return
+        self._hints_active = True
+        self._hints_buffer = ""
+        self._hints_map = {}
+        vte_w = self._vte.get_allocated_width()
+        self._hints_fixed.set_size_request(vte_w, -1)
+        self._hints_fixed.show_all()
+        matches = self._scan_for_hints()
+        labels = self._generate_hint_labels(len(matches))
+        for i, (match_type, match_text, col, row) in enumerate(matches):
+            label = labels[i]
+            self._hints_map[label] = (match_type, match_text)
+            x, y = self._cell_to_overlay_coords(col, row)
+            lbl = Gtk.Label(label=label)
+            lbl.get_style_context().add_class("tpgk-hint-label")
+            lbl.set_halign(Gtk.Align.START)
+            lbl.set_valign(Gtk.Align.START)
+            lbl.show()
+            self._hints_fixed.put(lbl, int(x), int(y))
+        if self._hints_map:
+            self._vte.feed(b"\r\n\x1b[90mType hint label to select, Esc to cancel.\x1b[0m\r\n")
+
+    def _deactivate_hints(self):
+        self._hints_active = False
+        self._hints_buffer = ""
+        for child in self._hints_fixed.get_children():
+            self._hints_fixed.remove(child)
+        self._hints_fixed.hide()
+        self._hints_map = {}
+
+    def _handle_hint_key(self, event):
+        key = event.keyval
+        if key == Gdk.KEY_Escape:
+            self._deactivate_hints()
+            return True
+        text = event.string
+        if not text or len(text) != 1 or ord(text[0]) < 0x20:
+            return True
+        self._hints_buffer += text
+        if self._hints_buffer in self._hints_map:
+            self._perform_hint_action(self._hints_map[self._hints_buffer])
+            self._deactivate_hints()
+            return True
+        matching_prefixes = [k for k in self._hints_map if k.startswith(self._hints_buffer)]
+        if not matching_prefixes:
+            self._deactivate_hints()
+            return True
+        return True
+
+    def _perform_hint_action(self, match_info):
+        match_type, match_text = match_info
+        if match_type == "url":
+            self._open_url(match_text)
+        elif match_type == "path":
+            clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+            clipboard.set_text(match_text, -1)
+            expanded = os.path.expanduser(match_text)
+            if os.path.isdir(expanded):
+                subprocess.Popen(["xdg-open", expanded], start_new_session=True)
+            elif os.path.isfile(expanded):
+                subprocess.Popen(["xdg-open", expanded], start_new_session=True)
+            else:
+                self._vte.feed(
+                    f"\r\n\x1b[32mPath copied: {match_text}\x1b[0m\r\n".encode()
+                )
+        elif match_type in ("git-sha", "ip"):
+            clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+            clipboard.set_text(match_text, -1)
+            self._vte.feed(
+                f"\r\n\x1b[32mCopied: {match_text}\x1b[0m\r\n".encode()
+            )
+
+    def _scan_for_hints(self):
+        vadj = self._scroll.get_vadjustment()
+        if not vadj:
+            return []
+        scroll_top = int(vadj.get_value())
+        page_size = int(vadj.get_page_size())
+        if page_size <= 0:
+            return []
+        first_row = max(0, scroll_top - 1)
+        last_row = scroll_top + page_size + 1
+        matches = []
+        try:
+            text, _attrs = self._vte.get_text_range_format(
+                Vte.Format.TEXT, first_row, 0, last_row, 0)
+        except Exception:
+            return matches
+        if not text:
+            return matches
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            row = first_row + i
+            if row > last_row:
+                break
+            for m in _HINT_URL_RE.finditer(line):
+                matches.append(("url", m.group(0), m.start(), row))
+            for m in _HINT_PATH_RE.finditer(line):
+                p = m.group(0).strip()
+                if len(p) >= 3:
+                    matches.append(("path", p, m.start(), row))
+            for m in _HINT_GIT_SHA_RE.finditer(line):
+                sha = m.group(1)
+                if not re.match(r'^\d+$', sha) and len(sha) >= 7:
+                    matches.append(("git-sha", sha, m.start(), row))
+            for m in _HINT_IP_RE.finditer(line):
+                parts = m.group(1).split(".")
+                if all(0 <= int(p) <= 255 for p in parts):
+                    matches.append(("ip", m.group(1), m.start(), row))
+        max_matches = len(_HINT_CHARS) + len(_HINT_CHARS) * len(_HINT_CHARS)
+        return matches[:max_matches]
+
+    def _activate_vi_copy(self):
+        if self._vi_copy_active:
+            return
+        self._vi_copy_active = True
+        self._vi_visual_active = False
+        self._vi_selection_start = -1
+        self._vi_selection_end = -1
+        self._vi_last_key = None
+        self._vi_last_key_time = 0
+        self._vi_overlay_area.set_size_request(
+            self._vte.get_allocated_width(),
+            self._vte.get_allocated_height())
+        self._vi_overlay_area.show_all()
+        self._vte.feed(b"\r\n\x1b[90mVI Copy Mode: hjkl scroll, v select, y yank, / search, Esc exit\x1b[0m\r\n")
+
+    def _deactivate_vi_copy(self):
+        self._vi_copy_active = False
+        self._vi_visual_active = False
+        self._vi_selection_start = -1
+        self._vi_selection_end = -1
+        self._vi_overlay_area.hide()
+
+    def _handle_vi_copy_key(self, event):
+        key = event.keyval
+        ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
+        if key == Gdk.KEY_Escape:
+            self._deactivate_vi_copy()
+            return True
+        if key == Gdk.KEY_C or key == Gdk.KEY_c:
+            if ctrl:
+                self._deactivate_vi_copy()
+                return True
+        if ctrl:
+            if key == Gdk.KEY_U or key == Gdk.KEY_u:
+                self._vi_scroll_page(up=True)
+                return True
+            if key == Gdk.KEY_D or key == Gdk.KEY_d:
+                self._vi_scroll_page(up=False)
+                return True
+            return True
+        if key == Gdk.KEY_j:
+            self._vi_scroll(1)
+        elif key == Gdk.KEY_k:
+            self._vi_scroll(-1)
+        elif key == Gdk.KEY_h:
+            self._vi_scroll_h(-3)
+        elif key == Gdk.KEY_l:
+            self._vi_scroll_h(3)
+        elif key == Gdk.KEY_w:
+            self._vi_scroll(5)
+        elif key == Gdk.KEY_b:
+            self._vi_scroll(-5)
+        elif key == Gdk.KEY_v:
+            self._vi_toggle_visual()
+        elif key == Gdk.KEY_V:
+            self._vi_toggle_visual()
+        elif key == Gdk.KEY_y:
+            self._vi_yank_selection()
+        elif key == Gdk.KEY_slash:
+            self._show_search()
+            return True
+        elif key == Gdk.KEY_question:
+            self._show_search()
+            return True
+        elif key == Gdk.KEY_g:
+            now = GLib.get_monotonic_time()
+            if self._vi_last_key == Gdk.KEY_g and (now - self._vi_last_key_time) < 1_000_000:
+                self._vi_scroll_to_top()
+                self._vi_last_key = None
+            else:
+                self._vi_last_key = Gdk.KEY_g
+                self._vi_last_key_time = now
+        elif key == Gdk.KEY_G:
+            self._vi_scroll_to_bottom()
+        else:
+            return True
+        if self._vi_visual_active:
+            self._vi_overlay_area.queue_draw()
+        return True
+
+    def _vi_scroll(self, lines):
+        vadj = self._scroll.get_vadjustment()
+        if not vadj:
+            return
+        new_val = vadj.get_value() + lines
+        bottom = max(0.0, vadj.get_upper() - vadj.get_page_size())
+        new_val = max(0.0, min(bottom, new_val))
+        vadj.set_value(new_val)
+        if self._vi_visual_active:
+            row = int(vadj.get_value())
+            if self._vi_selection_start < 0:
+                self._vi_selection_start = row
+            self._vi_selection_end = row
+
+    def _vi_scroll_h(self, cols):
+        hadj = self._scroll.get_hadjustment()
+        if not hadj:
+            return
+        cw = self._vte.get_char_width()
+        if cw <= 0:
+            cw = 8
+        new_val = hadj.get_value() + cols * cw
+        new_val = max(0.0, min(hadj.get_upper() - hadj.get_page_size(), new_val))
+        hadj.set_value(new_val)
+
+    def _vi_scroll_to_top(self):
+        vadj = self._scroll.get_vadjustment()
+        if vadj:
+            vadj.set_value(0)
+
+    def _vi_scroll_to_bottom(self):
+        vadj = self._scroll.get_vadjustment()
+        if vadj:
+            bottom = max(0.0, vadj.get_upper() - vadj.get_page_size())
+            vadj.set_value(bottom)
+
+    def _vi_scroll_page(self, up):
+        vadj = self._scroll.get_vadjustment()
+        if not vadj:
+            return
+        page = vadj.get_page_size() * 0.5
+        delta = -page if up else page
+        new_val = vadj.get_value() + delta
+        bottom = max(0.0, vadj.get_upper() - vadj.get_page_size())
+        new_val = max(0.0, min(bottom, new_val))
+        vadj.set_value(new_val)
+
+    def _vi_toggle_visual(self):
+        if self._vi_visual_active:
+            self._vi_visual_active = False
+            self._vi_selection_start = -1
+            self._vi_selection_end = -1
+            self._vi_overlay_area.queue_draw()
+            return
+        self._vi_visual_active = True
+        vadj = self._scroll.get_vadjustment()
+        if vadj:
+            self._vi_selection_start = int(vadj.get_value())
+            self._vi_selection_end = int(vadj.get_value())
+            self._vi_overlay_area.queue_draw()
+
+    def _vi_yank_selection(self):
+        if self._vi_visual_active and self._vi_selection_start >= 0:
+            start = min(self._vi_selection_start, self._vi_selection_end)
+            end = max(self._vi_selection_start, self._vi_selection_end)
+            if end > start + 500:
+                end = start + 500
+            try:
+                text, _ = self._vte.get_text_range_format(
+                    Vte.Format.TEXT, start, 0, end + 1, 0)
+            except Exception:
+                text = ""
+            if text:
+                clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+                clipboard.set_text(text, -1)
+                self._vte.feed(
+                    f"\r\n\x1b[32m{len(text.splitlines())} lines copied\x1b[0m\r\n".encode()
+                )
+            else:
+                self._vte.feed(b"\r\n\x1b[33mNo text selected.\x1b[0m\r\n")
+            self._deactivate_vi_copy()
+        else:
+            self._deactivate_vi_copy()
+
+    def _draw_vi_overlay(self, widget, cr):
+        if not self._vi_visual_active:
+            return
+        if self._vi_selection_start < 0 or self._vi_selection_end < 0:
+            return
+        vadj = self._scroll.get_vadjustment()
+        if not vadj:
+            return
+        scroll_row = vadj.get_value()
+        ch = self._vte.get_char_height()
+        if ch <= 0:
+            ch = 16
+        ok, vx, vy = self._vte.translate_coordinates(self._overlay, 0, 0)
+        width = widget.get_allocated_width()
+        height = widget.get_allocated_height()
+        start = min(self._vi_selection_start, self._vi_selection_end)
+        end = max(self._vi_selection_start, self._vi_selection_end)
+        padding = self._settings.get("window_padding_horizontal", 2)
+        x = padding + 8
+        for row in range(start, end + 1):
+            y = (row - scroll_row) * ch
+            if 0 <= y <= height:
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.12)
+                cr.rectangle(x, vy + y, width - x, ch)
+                cr.fill()
+        cur_y = (int(vadj.get_value()) - scroll_row) * ch
+        cr.set_source_rgba(0.988, 0.816, 0.31, 0.8)
+        cr.rectangle(0, vy + cur_y, width, 2)
+        cr.fill()
+
 
 
 def _hex_to_gdk(hex_color: str):

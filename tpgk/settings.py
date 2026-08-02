@@ -75,6 +75,8 @@ DEFAULTS = {
     "active_profile": "",
     "session_restore": True,
     "history_enabled": True,
+    "hint_mode_enabled": True,
+    "vi_copy_mode_enabled": False,
 }
 
 COLOR_SCHEMES = {

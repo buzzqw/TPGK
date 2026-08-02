@@ -11,3 +11,5 @@ if [ -d "$1" ]; then
     shift
 fi
 exec env PYTHONPATH="$SCRIPT_DIR" "$PYTHON_BIN" -m tpgk "$@"
+
+#env PYTHONPATH=$HOME/tpgk $HOME/tpgk/.venv/bin/python3 -m tpgk

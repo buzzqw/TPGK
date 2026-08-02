@@ -101,6 +101,7 @@ class TpgkApp(Gtk.Application):
             .tpgk-tab-menu { min-width: 220px; }
             .tpgk-tab-menu menuitem { padding: 6px 12px; min-height: 24px; }
             .tpgk-stats-label { font-size: 0.85em; font-family: Monospace; color: alpha(@theme_fg_color, 0.6); background: alpha(@theme_bg_color, 0.5); padding: 2px 12px; }
+            .tpgk-hint-label { background: #fce94f; color: #000000; font-family: Monospace; font-weight: bold; font-size: 0.85em; padding: 1px 3px; border-radius: 2px; }
         """)
         Gtk.StyleContext.add_provider_for_screen(
             Gdk.Screen.get_default(),
