@@ -1,4 +1,8 @@
+import os
+
 import psutil
+
+_proc = psutil.Process(os.getpid())
 
 
 def _mb(val: int) -> str:
@@ -22,6 +26,13 @@ def collect(is_ssh: bool = False) -> str:
         f"RAM {_mb(mem.used)}/{_mb(mem.total)} ({mem.percent:.0f}%)  "
         f"Disk {_mb(disk.used)}/{_mb(disk.total)} ({disk.percent:.0f}%)"
     )
+
+
+def collect_self() -> str:
+    with _proc.oneshot():
+        cpu = _proc.cpu_percent()
+        mem = _proc.memory_info()
+    return f"TPGK  CPU {cpu:5.1f}%  RAM {_mb(mem.rss)}  "
 
 
 def ssh_placeholder() -> str:

@@ -98,10 +98,16 @@ class _DetachedWindow(Gtk.Window):
         self._terminal = terminal
         self._apply_window_size()
 
-        self._stats_label = Gtk.Label()
-        self._stats_label.set_halign(Gtk.Align.START)
-        self._stats_label.get_style_context().add_class("tpgk-stats-label")
-        self._stats_label.set_no_show_all(True)
+        self._stats_sys_label = Gtk.Label()
+        self._stats_sys_label.set_halign(Gtk.Align.START)
+        self._stats_sys_label.get_style_context().add_class("tpgk-stats-label")
+        self._stats_self_label = Gtk.Label()
+        self._stats_self_label.set_halign(Gtk.Align.END)
+        self._stats_self_label.get_style_context().add_class("tpgk-stats-label")
+        self._stats_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self._stats_box.pack_start(self._stats_sys_label, True, True, 0)
+        self._stats_box.pack_end(self._stats_self_label, False, False, 0)
+        self._stats_box.set_no_show_all(True)
         self._stats_source_id = 0
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -115,7 +121,7 @@ class _DetachedWindow(Gtk.Window):
         vbox.pack_start(self._menubar, False, False, 0)
         vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         vbox.pack_start(terminal, True, True, 0)
-        vbox.pack_end(self._stats_label, False, False, 0)
+        vbox.pack_end(self._stats_box, False, False, 0)
 
         self._toolbar.set_visible(self._settings.get("show_toolbar", False))
         self._menubar.set_visible(self._settings.get("show_menubar", True))
@@ -362,7 +368,9 @@ class _DetachedWindow(Gtk.Window):
 
     def _apply_stats_visibility(self):
         visible = self._settings.get("show_stats", False)
-        self._stats_label.set_visible(visible)
+        self._stats_box.set_visible(visible)
+        self._stats_sys_label.set_visible(visible)
+        self._stats_self_label.set_visible(visible)
         if visible:
             self._start_stats_timer()
         else:
@@ -380,25 +388,29 @@ class _DetachedWindow(Gtk.Window):
             self._stats_source_id = 0
 
     def _refresh_stats(self):
-        from tpgk.system_stats import collect, ssh_placeholder
+        from tpgk.system_stats import collect, collect_self, ssh_placeholder
         term = self._terminal if self._terminal else None
         if term is None:
-            self._stats_label.set_text("")
+            self._stats_sys_label.set_text("")
+            self._stats_self_label.set_text("")
             return True
         if term.is_ssh_client():
             stats = term.get_remote_stats()
             if not stats:
                 stats = ssh_placeholder()
-            self._stats_label.set_text(stats)
+            self._stats_sys_label.set_text(stats)
+            self._stats_self_label.set_text(collect_self())
             return True
         if term.is_ssh():
             stats = collect()
-            self._stats_label.set_text(f"  [SSH] {stats.strip()}")
+            self._stats_sys_label.set_text(f"  [SSH] {stats.strip()}")
+            self._stats_self_label.set_text(collect_self())
             return True
         stats = term.get_osc133_stats()
         if not stats:
             stats = collect()
-        self._stats_label.set_text(stats)
+        self._stats_sys_label.set_text(stats)
+        self._stats_self_label.set_text(collect_self())
         return True
 
     def _toggle_fullscreen(self, *a):
@@ -551,17 +563,23 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._build_headerbar()
 
-        self._stats_label = Gtk.Label()
-        self._stats_label.set_halign(Gtk.Align.START)
-        self._stats_label.get_style_context().add_class("tpgk-stats-label")
-        self._stats_label.set_no_show_all(True)
+        self._stats_sys_label = Gtk.Label()
+        self._stats_sys_label.set_halign(Gtk.Align.START)
+        self._stats_sys_label.get_style_context().add_class("tpgk-stats-label")
+        self._stats_self_label = Gtk.Label()
+        self._stats_self_label.set_halign(Gtk.Align.END)
+        self._stats_self_label.get_style_context().add_class("tpgk-stats-label")
+        self._stats_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self._stats_box.pack_start(self._stats_sys_label, True, True, 0)
+        self._stats_box.pack_end(self._stats_self_label, False, False, 0)
+        self._stats_box.set_no_show_all(True)
         self._stats_source_id = 0
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         vbox.pack_start(self._menubar, False, False, 0)
         vbox.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         vbox.pack_start(self._paned, True, True, 0)
-        vbox.pack_end(self._stats_label, False, False, 0)
+        vbox.pack_end(self._stats_box, False, False, 0)
         self.add(vbox)
 
         self.connect("delete-event", self._on_close)
@@ -1400,7 +1418,9 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _apply_stats_visibility(self):
         visible = self._settings.get("show_stats", False)
-        self._stats_label.set_visible(visible)
+        self._stats_box.set_visible(visible)
+        self._stats_sys_label.set_visible(visible)
+        self._stats_self_label.set_visible(visible)
         if visible:
             self._start_stats_timer()
         else:
@@ -1418,25 +1438,29 @@ class MainWindow(Gtk.ApplicationWindow):
             self._stats_source_id = 0
 
     def _refresh_stats(self):
-        from tpgk.system_stats import collect, ssh_placeholder
+        from tpgk.system_stats import collect, collect_self, ssh_placeholder
         term = self._current_terminal()
         if term is None:
-            self._stats_label.set_text("")
+            self._stats_sys_label.set_text("")
+            self._stats_self_label.set_text("")
             return True
         if term.is_ssh_client():
             stats = term.get_remote_stats()
             if not stats:
                 stats = ssh_placeholder()
-            self._stats_label.set_text(stats)
+            self._stats_sys_label.set_text(stats)
+            self._stats_self_label.set_text(collect_self())
             return True
         if term.is_ssh():
             stats = collect()
-            self._stats_label.set_text(f"  [SSH] {stats.strip()}")
+            self._stats_sys_label.set_text(f"  [SSH] {stats.strip()}")
+            self._stats_self_label.set_text(collect_self())
             return True
         stats = term.get_osc133_stats()
         if not stats:
             stats = collect()
-        self._stats_label.set_text(stats)
+        self._stats_sys_label.set_text(stats)
+        self._stats_self_label.set_text(collect_self())
         return True
 
     def _toggle_fullscreen(self, *a):
