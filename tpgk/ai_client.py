@@ -1,4 +1,5 @@
 import json
+import gc
 import threading
 from typing import Generator
 from tpgk.logging_utils import get_logger
@@ -51,6 +52,8 @@ class AIClient:
         },
     }
 
+    MAX_MESSAGE_PAIRS = 20
+
     def __init__(self, provider: str, api_key: str = "", model: str = None, base_url: str = ""):
         self.provider = provider
         self.api_key = api_key
@@ -63,10 +66,18 @@ class AIClient:
         self._active_response = None
         self._response_lock = threading.Lock()
 
+    def _truncate_messages(self):
+        system_msgs = [m for m in self._messages if m.get("role") == "system"]
+        non_system = [m for m in self._messages if m.get("role") != "system"]
+        if len(non_system) > self.MAX_MESSAGE_PAIRS * 2:
+            non_system = non_system[-(self.MAX_MESSAGE_PAIRS * 2):]
+            self._messages = system_msgs + non_system
+
     def set_system_prompt(self, prompt: str):
         self._system_prompt = prompt
 
     def chat(self, message: str) -> str:
+        self._truncate_messages()
         has_system = any(m.get("role") == "system" for m in self._messages)
         if self._system_prompt and not has_system:
             self._messages.insert(0, {"role": "system", "content": self._system_prompt})
@@ -85,6 +96,7 @@ class AIClient:
             raise
 
     def chat_stream(self, message: str, cancel_event=None) -> Generator[str, None, None]:
+        self._truncate_messages()
         has_system = any(m.get("role") == "system" for m in self._messages)
         if self._system_prompt and not has_system:
             self._messages.insert(0, {"role": "system", "content": self._system_prompt})
@@ -104,6 +116,7 @@ class AIClient:
 
     def reset(self):
         self._messages = []
+        gc.collect()
 
     def cancel(self):
         """Close the current response so a streaming worker can exit promptly."""

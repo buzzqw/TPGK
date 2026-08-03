@@ -1,4 +1,5 @@
 import os
+import gc
 import gi
 import threading
 import subprocess
@@ -42,6 +43,19 @@ _HINT_IP_RE = re.compile(
 
 
 class TerminalBox(Gtk.Box):
+    _CMD_COMMANDS = [
+        ("/ai", "Enter AI chat mode"),
+        ("/ai context N <question>", "Include last N terminal lines as context"),
+        ("/ai off", "Exit AI chat mode"),
+        ("/connect [provider]", "Connect to AI provider"),
+        ("/history [terms | :sql SQL]", "Search command history"),
+        ("/wnotes [-file.md] <text>", "Save timestamped note"),
+        ("/onotes [-file.md]", "Open notes in editor"),
+        ("/help", "Show all commands and shortcuts"),
+        ("/clear", "Clear the terminal screen"),
+        ("/cls", "Clear the terminal screen"),
+    ]
+
     def __init__(self, window):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self._window = window
@@ -292,18 +306,6 @@ class TerminalBox(Gtk.Box):
         self._settings.connect(self.apply_settings)
 
         self._cmd_bar_visible = False
-        self._cmd_commands = [
-            ("/ai", "Enter AI chat mode"),
-            ("/ai context N <question>", "Include last N terminal lines as context"),
-            ("/ai off", "Exit AI chat mode"),
-            ("/connect [provider]", "Connect to AI provider"),
-            ("/history [terms | :sql SQL]", "Search command history"),
-            ("/wnotes [-file.md] <text>", "Save timestamped note"),
-            ("/onotes [-file.md]", "Open notes in editor"),
-            ("/help", "Show all commands and shortcuts"),
-            ("/clear", "Clear the terminal screen"),
-            ("/cls", "Clear the terminal screen"),
-        ]
 
         self.show_all()
 
@@ -647,6 +649,7 @@ fi
                     os.kill(self._pid, 15)
             except OSError:
                 pass
+        gc.collect()
 
     def kill(self, sig=15):
         if self._pid > 0:
@@ -1212,11 +1215,18 @@ fi
             terminal.copy_clipboard_format(Vte.Format.TEXT)
 
     def _get_visible_text(self, num_lines):
-        text = self._vte.get_text_format(Vte.Format.TEXT) or ""
-        lines = text.split("\n")
-        if len(lines) > num_lines:
-            lines = lines[-num_lines:]
-        return "\n".join(lines)
+        try:
+            _, end_row = self._vte.get_cursor_position()
+            start_row = max(0, end_row - num_lines)
+            text, _ = self._vte.get_text_range_format(
+                Vte.Format.TEXT, start_row, 0, end_row, -1)
+            return text or ""
+        except Exception:
+            text = self._vte.get_text_format(Vte.Format.TEXT) or ""
+            lines = text.split("\n")
+            if len(lines) > num_lines:
+                lines = lines[-num_lines:]
+            return "\n".join(lines)
 
     def _on_button_press(self, terminal, event):
         if event.button == 2:
@@ -1945,7 +1955,7 @@ fi
             self._cmd_list.remove(child)
         q = query.lower().lstrip('/')
         first = None
-        for cmd, desc in self._cmd_commands:
+        for cmd, desc in self._CMD_COMMANDS:
             if not q or q in cmd.lower():
                 row = Gtk.ListBoxRow()
                 hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)

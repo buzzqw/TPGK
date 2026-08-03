@@ -1,4 +1,5 @@
 import os
+import gc
 import sys
 import shutil
 import signal
@@ -1668,6 +1669,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 f"\r\n\x1b[32m+ Added all text to note: {path}\x1b[0m\r\n".encode()
             )
             term._vte.feed_child(b'\r')
+            gc.collect()
 
     def _show_about(self, *a):
         dialog = Gtk.AboutDialog(transient_for=self, modal=True)
