@@ -1737,33 +1737,21 @@ fi
                     and self._history.search("ssh", 1, self.get_cwd())):
                 self._start_history_tab_complete(allow_list=True)
                 return True
-            # Let the shell's own completion run first, untouched (files,
-            # paths, git branches, ssh hosts, whatever bash knows how to
-            # complete) - that answer can depend on completion scripts we
-            # have no visibility into from here. Only if the line still
-            # looks the same shortly after (nothing matched) do we step in
-            # and offer history matches instead of leaving the user with a
-            # dead keypress.
+            # Let the shell's own completion run first on single Tab.
+            # Double Tab triggers the TPGK history picker immediately.
             if self._input_shadow.strip():
                 now = GLib.get_monotonic_time()
-                # A second Tab, pressed right after the first with no other
-                # key in between (generation is only one ahead of the one we
-                # stamped) and within the same window we'd have waited out
-                # anyway, reads as "I know there's nothing here, show me
-                # history" - skip the 120ms wait instead of making the user
-                # sit through it twice.
                 if (self._tab_fallback_pending_before is not None
                         and self._tab_fallback_generation == self._tab_fallback_pending_generation + 1
                         and now - self._tab_fallback_pending_time < 600_000
-                        and self._get_real_command_text() == self._tab_fallback_pending_before):
+                        and self._input_shadow.rstrip('\t') == self._tab_fallback_pending_before):
                     self._tab_fallback_pending_before = None
                     self._start_history_tab_complete(allow_list=True)
+                    return True
                 else:
-                    before = self._get_real_command_text()
-                    self._tab_fallback_pending_before = before
+                    self._tab_fallback_pending_before = self._input_shadow
                     self._tab_fallback_pending_generation = self._tab_fallback_generation
                     self._tab_fallback_pending_time = now
-                    self._schedule_tab_history_fallback(before)
             self._input_shadow += "\t"
             return False
 
@@ -2547,6 +2535,10 @@ fi
         # with a stale/wrong string is exactly what produces irrelevant
         # results in the picker.
         query = self._get_real_command_text()
+        # After shell completion output, the VTE range from shadow anchor
+        # to cursor spans extra lines. Fall back to the keystroke mirror.
+        if '\n' in query:
+            query = self._input_shadow.rstrip('\t')
         results = self._history.search(query, 50, self.get_cwd())
         if not results:
             return
@@ -2895,7 +2887,7 @@ fi
             "  \x1b[33m/clear\x1b[0m                 Clear the screen\r\n"
             "\r\n"
             "  \x1b[90mTab\x1b[0m                    Autocomplete /commands\r\n"
-            "  \x1b[90mTab\x1b[0m                    History picker if shell completion finds nothing\r\n"
+            "  \x1b[90mTab Tab\x1b[0m                 History picker for the current command\r\n"
             "  \x1b[90mCtrl+R\x1b[0m                  History search\r\n"
             "  \x1b[90mCtrl+U\x1b[0m                  Kill line\r\n"
             "  \x1b[90mCtrl+W\x1b[0m                  Kill word\r\n"
