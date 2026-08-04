@@ -241,9 +241,7 @@ class TerminalBox(Gtk.Box):
         self._history_sql_mode = False
         self._history_tab_mode = False
         self._history_tab_original = ""
-        self._tab_fallback_generation = 0
         self._tab_fallback_pending_before = None
-        self._tab_fallback_pending_generation = None
         self._tab_fallback_pending_time = 0
         self._connect_provider = None
         self._connect_model = None
@@ -1459,10 +1457,6 @@ fi
 
     def _on_key_press(self, terminal, event):
         state = event.state
-        # Invalidates any pending _check_tab_history_fallback callback from a
-        # previous Tab press - any further key activity means the user has
-        # moved on and a delayed history popup would now be a surprise.
-        self._tab_fallback_generation += 1
         ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
         shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
         alt = bool(state & Gdk.ModifierType.MOD1_MASK)
@@ -1737,12 +1731,17 @@ fi
                     and self._history.search("ssh", 1, self.get_cwd())):
                 self._start_history_tab_complete(allow_list=True)
                 return True
-            # Let the shell's own completion run first on single Tab.
-            # Double Tab triggers the TPGK history picker immediately.
+            # Let the shell's own completion run first on single Tab. A
+            # second Tab shortly after, with nothing typed in between (the
+            # shadow is unchanged apart from Tab characters), triggers
+            # history instead. Using a time window rather than requiring the
+            # very next key event to be Tab makes this robust to an
+            # incidental stray key (e.g. a modifier tap) landing between the
+            # two presses, which would otherwise silently fall back to
+            # single-Tab behavior on the second press.
             if self._input_shadow.strip():
                 now = GLib.get_monotonic_time()
                 if (self._tab_fallback_pending_before is not None
-                        and self._tab_fallback_generation == self._tab_fallback_pending_generation + 1
                         and now - self._tab_fallback_pending_time < 600_000
                         and self._input_shadow.rstrip('\t') == self._tab_fallback_pending_before):
                     self._tab_fallback_pending_before = None
@@ -1750,7 +1749,6 @@ fi
                     return True
                 else:
                     self._tab_fallback_pending_before = self._input_shadow
-                    self._tab_fallback_pending_generation = self._tab_fallback_generation
                     self._tab_fallback_pending_time = now
             self._input_shadow += "\t"
             return False
@@ -2480,45 +2478,6 @@ fi
             # Fix #11: \x1b[K is a display escape, meaningless as pty input; use \x15 to kill readline
             self._vte.feed_child(b'\x15')
             self._vte.feed_child(cmd.encode("utf-8"))
-
-    def _schedule_tab_history_fallback(self, before):
-        # `before` is read from the real screen, not _input_shadow: shell tab
-        # completion writes straight to the pty and never touches the
-        # keystroke mirror, so comparing against _input_shadow would miss a
-        # successful native completion and pop up history on top of it.
-        if not self._settings.get("history_enabled", True):
-            self._tab_fallback_pending_before = None
-            return
-        generation = self._tab_fallback_generation
-        GLib.timeout_add(120, self._check_tab_history_fallback, generation, before)
-
-    def _check_tab_history_fallback(self, generation, before):
-        if generation != self._tab_fallback_generation:
-            return False
-        self._tab_fallback_pending_before = None
-        if (self._history_search_mode or self._ai_mode or self._cmd_bar_visible
-                or self._provider_list or self._model_list or self._async_pending):
-            return False
-        if self._get_real_command_text() != before:
-            return False
-        # The line text can be unchanged for two very different reasons:
-        # either the shell truly had nothing to complete, or it had several
-        # candidates with no common prefix and printed them as a list below
-        # the prompt (bash's classic "press Tab twice" behavior) without
-        # touching the line itself. In the second case the cursor moves to a
-        # new row; stepping in with our own history popup there would bury
-        # the real completion candidates the user was expecting.
-        try:
-            _, cur_row = self._vte.get_cursor_position()
-            anchor_row = self._shadow_anchor[1] if self._shadow_anchor else cur_row
-            if cur_row != anchor_row:
-                return False
-        except Exception:
-            pass
-        # The shell did not complete or list candidates, so its Tab handling
-        # is finished. Show all matching history entries on the first Tab.
-        self._start_history_tab_complete(allow_list=True)
-        return False
 
     def _fill_history_match(self, cmd: str):
         # Replaces the current line in-place with a single unambiguous
