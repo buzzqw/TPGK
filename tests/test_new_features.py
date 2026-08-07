@@ -773,13 +773,16 @@ class TestTerminalSize:
         assert 'self._apply_size()' in init_body or '_apply_size()' in init_body, \
             "__init__ non chiama _apply_size()"
 
-    def test_apply_size_in_apply_settings(self):
-        """apply_settings() deve chiamare _apply_size()."""
+    def test_apply_size_not_in_apply_settings(self):
+        """apply_settings() non deve richiamare _apply_size(): VTE tiene già sincronizzata
+        la dimensione del pty con l'allocazione reale del widget ad ogni resize; rifissarla
+        ai valori di default salvati (es. 80x24) ad ogni notify_changed() desincronizza il
+        pty dalla larghezza effettivamente renderizzata, causando testo "spaginato" male."""
         idx = SOURCE.find('def apply_settings')
         if idx < 0:
             pytest.skip("apply_settings non trovato")
         block = SOURCE[idx:SOURCE.find('\n    def ', idx + 20)]
-        assert '_apply_size()' in block, "apply_settings() non chiama _apply_size()"
+        assert '_apply_size()' not in block, "apply_settings() chiama ancora _apply_size()"
 
     def test_settings_dialog_has_size_spinbuttons(self):
         """Preferences deve avere spin button per columns e rows."""

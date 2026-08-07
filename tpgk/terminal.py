@@ -417,7 +417,10 @@ class TerminalBox(Gtk.Box):
         self._apply_cursor_shape()
         self._apply_palette()
         self._apply_scrollbar_position()
-        self._apply_size()
+        # Intentionally not re-requesting the pty column/row count here: VTE already keeps
+        # it in sync with the widget's real pixel allocation on every resize. Doing it again
+        # on every settings change would desync the pty size from what's actually on screen
+        # and make wrapped output (e.g. pacman's "100%") split across lines.
         self._apply_padding()
         self._apply_undercurl()
         self._vte.set_scrollback_lines(self._settings.get("scrollback_lines", 10000))
