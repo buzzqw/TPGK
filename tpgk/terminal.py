@@ -87,8 +87,6 @@ class TerminalBox(Gtk.Box):
         self._vte.set_audible_bell(False)
         self._vte.set_allow_bold(self._settings.get("allow_bold_text", True))
 
-        self._apply_size()
-
         self._encoding = self._settings.get("encoding", "UTF-8")
         if self._encoding.upper() != "UTF-8":
             try:

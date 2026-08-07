@@ -766,12 +766,15 @@ class TestTerminalSize:
         assert 'terminal_columns' in block, "_apply_size() non legge terminal_columns"
         assert 'terminal_rows' in block, "_apply_size() non legge terminal_rows"
 
-    def test_apply_size_called_during_init(self):
-        """_apply_size() deve essere chiamato in __init__."""
+    def test_apply_size_not_called_during_init(self):
+        """_apply_size() non deve essere chiamato in __init__: VTE calcola da solo
+        la dimensione del pty dall'allocazione del widget. Forzarla con set_size()
+        prima che il widget abbia un'allocazione puo' interferire con il resize
+        automatico e causare testo spaginato."""
         init_idx = SOURCE.find('def __init__')
         init_body = SOURCE[init_idx:SOURCE.find('\n    def apply_settings', init_idx)]
-        assert 'self._apply_size()' in init_body or '_apply_size()' in init_body, \
-            "__init__ non chiama _apply_size()"
+        assert '_apply_size()' not in init_body and 'self._apply_size()' not in init_body, \
+            "__init__ chiama ancora _apply_size()"
 
     def test_apply_size_not_in_apply_settings(self):
         """apply_settings() non deve richiamare _apply_size(): VTE tiene già sincronizzata
