@@ -56,7 +56,7 @@ def _validate_profile(data):
                 return None
             if key == "font_size" and not 4 <= value <= 128:
                 return None
-            if key == "scrollback_lines" and not 0 <= value <= 1_000_000:
+            if key == "scrollback_lines" and not -1 <= value <= 1_000_000:
                 return None
             if key.startswith("window_padding_") and not 0 <= value <= 100:
                 return None
@@ -77,8 +77,11 @@ def _validate_profile(data):
             return None
         valid[key] = value
     palette = valid.get("custom_palette")
-    if palette is not None and (not isinstance(palette, dict) or
-                                any(not _COLOR_RE.fullmatch(value) for value in palette.values())):
+    if palette is not None and (
+            not isinstance(palette, dict) or len(palette) > 16 or
+            any(not isinstance(key, str) or not isinstance(value, str)
+                or not _COLOR_RE.fullmatch(value)
+                for key, value in palette.items())):
         return None
     return valid
 

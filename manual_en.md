@@ -50,7 +50,7 @@ Enable via `View > Always Show Toolbar`. Contains:
 
 ### Command Palette (`/`)
 
-**New:** Press `/` at the beginning of a line to open the **command palette**, an interactive popup with:
+**New:** Press `Ctrl+Shift+P` to open the **command palette**, an interactive popup with:
 - List of all TPGK commands with descriptions
 - **Fuzzy search**: type to filter
 - **Arrow keys** to navigate, **Enter** to execute, **Esc** to dismiss
@@ -415,7 +415,7 @@ the features of the main window.
 | `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Jump to previous / next prompt (OSC 133) |
 | `Ctrl+Click` URL | Open URL in browser |
 | `Tab` (after `/`) | Autocomplete TPGK command |
-| `/` (start of line) | Open command palette |
+| `Ctrl+Shift+P` | Open command palette |
 
 ---
 
@@ -559,7 +559,7 @@ sudo pacman -S gtk3 vte3 python-gobject
 ### / commands don't work
 
 - Make sure `/` is the **first character** of the line
-- Use the **command palette**: press `/` for the interactive popup
+- Use the **command palette**: press `Ctrl+Shift+P` for the interactive popup
 - Alternatively use **Tab** to autocomplete commands (e.g., `/his` + Tab → `/history`)
 - Press `Esc` to cancel
 
@@ -614,7 +614,7 @@ Ctrl+L               Clear screen
 Ctrl+Click URL       Open URL in browser
 Tab (after /)        Autocomplete command
 Alt+1..9             Replay history command
-/                    Open command palette
+Ctrl+Shift+P          Open command palette
 ```
 
 ---

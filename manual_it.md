@@ -50,7 +50,7 @@ Attivabile da `View > Always Show Toolbar`. Contiene:
 
 ### Command Palette (`/`)
 
-**Novita':** Premi `/` a inizio riga per aprire la **command palette**, un popup interattivo
+**Novita':** Premi `Ctrl+Shift+P` per aprire la **command palette**, un popup interattivo
 con:
 - Lista di tutti i comandi TPGK con descrizione
 - **Fuzzy search**: digita per filtrare
@@ -421,7 +421,7 @@ funzionalita' della finestra principale.
 | `Ctrl+Shift+Su` / `Ctrl+Shift+Giu'` | Salta al prompt precedente/successivo (OSC 133) |
 | `Ctrl+Click` su URL | Apri URL nel browser |
 | `Tab` (dopo `/`) | Autocompleta comando TPGK |
-| `/` (a inizio riga) | Apri command palette |
+| `Ctrl+Shift+P` | Apri command palette |
 
 ---
 
@@ -565,7 +565,7 @@ sudo pacman -S gtk3 vte3 python-gobject
 ### I comandi / non funzionano
 
 - Assicurati di scrivere `/` come **primo carattere** della riga
-- Usa la **command palette**: premi `/` per il popup interattivo
+- Usa la **command palette**: premi `Ctrl+Shift+P` per il popup interattivo
 - In alternativa usa **Tab** per autocompletare i comandi (es. `/his` + Tab → `/history`)
 - Premi `Esc` per annullare
 
@@ -610,7 +610,7 @@ Al prossimo avvio TPGK creera' una configurazione pulita.
 /onotes [-f]           Apri le note
 /learn <file>          Importa comandi da un file nella history (senza eseguirli)
 /optimize history      Deduplica, vacuum e analyze del db della history
-/help                  Mostra tutti i comandi o apri command palette con /
+/help                  Mostra tutti i comandi o apri command palette con Ctrl+Shift+P
 
 Ctrl+R                 Ricerca history interattiva
 Ctrl+U                 Kill line
@@ -620,7 +620,7 @@ Ctrl+L                 Pulisci schermo
 Ctrl+Click URL         Apri URL nel browser
 Tab (dopo /)           Autocompleta comando
 Alt+1..9               Riesegui comando history
-/                      Apri command palette
+Ctrl+Shift+P            Apri command palette
 ```
 
 ---

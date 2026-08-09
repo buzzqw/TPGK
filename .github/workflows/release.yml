@@ -13,6 +13,9 @@ on:
 permissions:
   contents: write
 
+env:
+  APPIMAGETOOL_SHA256: b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2
+
 jobs:
   appimage:
     name: Build AppImage (x86_64)
@@ -21,12 +24,16 @@ jobs:
     steps:
       - name: Determina tag
         id: tag
+        env:
+          RELEASE_EVENT_TAG: ${{ github.event.release.tag_name }}
+          MANUAL_TAG: ${{ inputs.tag }}
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            echo "value=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          TAG="${RELEASE_EVENT_TAG:-$MANUAL_TAG}"
+          if [[ ! "$TAG" =~ ^v?[0-9]+([.][0-9]+){0,2}$ ]]; then
+            echo "Tag non valido: $TAG" >&2
+            exit 1
           fi
+          printf 'value=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,11 +42,13 @@ jobs:
 
       - name: Versione
         id: ver
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.value }}
         run: |
-          TAG="${{ steps.tag.outputs.value }}"
+          TAG="$RELEASE_TAG"
           VER="${TAG#v}"
-          echo "tag=${TAG}"     >> "$GITHUB_OUTPUT"
-          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$VER" >> "$GITHUB_OUTPUT"
 
       - name: Install system dependencies
         run: |
@@ -70,13 +79,16 @@ jobs:
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" \
             -O appimagetool
           chmod +x appimagetool
+          printf '%s  appimagetool\n' "$APPIMAGETOOL_SHA256" | sha256sum --check --strict
           ./appimagetool --appimage-extract
           mv squashfs-root appimagetool-extracted
 
       - name: Build AppImage
         id: build_appimage
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
+          VERSION="$RELEASE_VERSION"
           APPIMAGE_NAME="TPGK-${VERSION}-x86_64.AppImage"
           ARCH=x86_64 appimagetool-extracted/AppRun \
             dist/tpgk.AppDir \
@@ -90,7 +102,8 @@ jobs:
 
       - name: Upload AppImage to release
         run: |
-          gh release upload "${{ steps.ver.outputs.tag }}" \
+          gh release upload "$RELEASE_TAG" \
             "${{ steps.build_appimage.outputs.name }}" --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.ver.outputs.tag }}

@@ -32,7 +32,7 @@ search, and a built-in notes system.
   Gruvbox Dark, Monokai, Nord, Matrix
 - **Custom 16-color palette** editor with presets
 - **Clickable URLs** — Ctrl+Click to open in browser
-- **Command palette** — press `/` for interactive popup with fuzzy search
+- **Command palette** — press `Ctrl+Shift+P` for an interactive popup with fuzzy search
 
 ### AI Chat (built-in)
 - `/ai` — Chat with AI directly in the terminal
@@ -105,7 +105,7 @@ git clone https://github.com/buzzqw/TPGK.git tpgk
 cd tpgk
 uv venv .venv --system-site-packages
 source .venv/bin/activate
-uv pip install requests
+uv pip install requests psutil
 ```
 
 ### Run
@@ -153,7 +153,7 @@ window unless a directory, `--new-window`, or `--execute` is supplied.
 | `F11` | Fullscreen |
 | `Ctrl+Click` URL | Open URL in browser |
 | `Alt+1..9` | Re-execute history |
-| `/` (start of line) | Open command palette |
+| `Ctrl+Shift+P` | Open command palette |
 | `Tab` (after `/`) | Autocomplete command / show provider list for `/connect` |
 
 ---

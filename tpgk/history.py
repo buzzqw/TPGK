@@ -63,6 +63,24 @@ class HistoryManager:
             self._trim()
         return cur.lastrowid
 
+    def add_many(self, commands, cwd: str = "", exit_code: int = -1):
+        values = [
+            (command, cwd, exit_code, datetime.datetime.now().isoformat())
+            for command in commands
+        ]
+        if not values:
+            return 0
+        self._conn.executemany(
+            "INSERT INTO commands (command, cwd, exit_code, timestamp) VALUES (?,?,?,?)",
+            values,
+        )
+        self._conn.commit()
+        self._inserts_since_trim += len(values)
+        if self._inserts_since_trim >= self.TRIM_CHECK_INTERVAL:
+            self._inserts_since_trim = 0
+            self._trim()
+        return len(values)
+
     def set_exit_code(self, row_id, exit_code: int):
         # Called once the shell reports how a command finished (OSC 133 "D").
         # exit_code is unknown at add() time since that fires on command
@@ -231,13 +249,20 @@ class HistoryManager:
 
     def _trim(self, max_rows: int = 1_000_000):
         def _do_trim():
-            count = self._conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
-            if count > max_rows:
-                self._conn.execute(
-                    "DELETE FROM commands WHERE id NOT IN (SELECT id FROM commands ORDER BY id DESC LIMIT ?)",
-                    (max_rows,),
-                )
-                self._conn.commit()
+            conn = sqlite3.connect(HISTORY_DB, timeout=5)
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+                if count > max_rows:
+                    conn.execute(
+                        "DELETE FROM commands WHERE id NOT IN "
+                        "(SELECT id FROM commands ORDER BY id DESC LIMIT ?)",
+                        (max_rows,),
+                    )
+                    conn.commit()
+            except sqlite3.Error:
+                logger.exception("history_trim_failed")
+            finally:
+                conn.close()
         threading.Thread(target=_do_trim, daemon=True).start()
 
     def search_latest(self, prefix: str = "", limit: int = 20):
@@ -266,17 +291,21 @@ class HistoryManager:
         Checkpoints the
         WAL, VACUUMs and ANALYZEs. Returns before/after stats for display.
         """
-        rows_before = self._conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
-        size_before = os.path.getsize(HISTORY_DB) if os.path.exists(HISTORY_DB) else 0
+        conn = sqlite3.connect(HISTORY_DB, timeout=30)
+        try:
+            rows_before = conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+            size_before = os.path.getsize(HISTORY_DB) if os.path.exists(HISTORY_DB) else 0
 
-        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        self._conn.execute("ANALYZE")
-        self._conn.execute("VACUUM")
-        self._conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute("ANALYZE")
+            conn.execute("VACUUM")
+            conn.commit()
 
-        rows_after = self._conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
-        size_after = os.path.getsize(HISTORY_DB) if os.path.exists(HISTORY_DB) else 0
-        self._inserts_since_trim = 0
+            rows_after = conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+            size_after = os.path.getsize(HISTORY_DB) if os.path.exists(HISTORY_DB) else 0
+            self._inserts_since_trim = 0
+        finally:
+            conn.close()
 
         return {
             "rows_before": rows_before,

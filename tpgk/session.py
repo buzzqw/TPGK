@@ -135,6 +135,9 @@ def delete_session(name):
 def restore_window(window, data):
     if not data:
         return
+    prepare = getattr(window, "_prepare_session_restore", None)
+    if prepare:
+        prepare()
     split = data.get("split_mode", "single")
     tabs_left = data.get("tabs_left", [])
     tabs_right = data.get("tabs_right", [])
@@ -152,3 +155,5 @@ def restore_window(window, data):
         for tab in tabs_right:
             window._add_new_tab(cwd=tab["cwd"], target_notebook=window._notebook2,
                                 base_title=tab["base_title"], display_title=tab["title"])
+    elif split == "single" and hasattr(window, "_set_split"):
+        window._set_split("single", create_tab=False)

@@ -142,15 +142,15 @@ class TestFeature3AiCancellation:
             "_ai_busy non resettato in _on_ai_finished()"
 
     def test_ctrl_c_increments_generation(self):
-        """Ctrl+C deve incrementare _ai_generation e resettare _ai_busy."""
+        """Ctrl+C invalida la richiesta e lascia il worker chiudere il ciclo."""
         # Find the Ctrl+C (not Ctrl+Shift+C) block - look for KEY_C without SHIFT
         idx = SOURCE.find('if ctrl and not shift:')
         ctrl_block = SOURCE[idx:idx + 2000]
         ctrl_c_block = ctrl_block.split('KEY_C or key == Gdk.KEY_c')[1].split('return True')[0]
         assert '_ai_generation += 1' in ctrl_c_block, \
             "Ctrl+C non incrementa _ai_generation"
-        assert '_ai_busy = False' in ctrl_c_block, \
-            "Ctrl+C non resetta _ai_busy"
+        assert '_cancel_ai_stream(invalidate=False)' in ctrl_c_block, \
+            "Ctrl+C non cancella lo stream AI"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -524,10 +524,14 @@ class TestFeature8AiContext:
         if idx < 0:
             pytest.skip("_execute_tpgk_command non trovato")
         block = SOURCE[idx:SOURCE.find('\n    def ', idx + 20)]
-        assert 'num_lines' in block, \
-            "/ai context non estrae num_lines in _execute_tpgk_command"
-        assert 'int(parts[0])' in block, \
-            "/ai context non converte N a int in _execute_tpgk_command"
+        assert '_build_ai_context_prompt' in block, \
+            "/ai context non usa il parser condiviso"
+        helper_idx = SOURCE.find('def _build_ai_context_prompt')
+        helper = SOURCE[helper_idx:SOURCE.find('\n    def ', helper_idx + 20)]
+        assert 'num_lines' in helper, \
+            "/ai context non estrae num_lines"
+        assert 'int(parts[0])' in helper, \
+            "/ai context non converte N a int"
 
     def test_ai_context_prepends_terminal_text(self):
         """Il testo terminale deve essere preposto al prompt."""

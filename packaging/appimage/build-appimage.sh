@@ -17,6 +17,7 @@ VERSION="${1:-$(git describe --tags --always 2>/dev/null || echo 'dev')}"
 VERSION="${VERSION#v}"
 ARCH="$(uname -m)"
 APPIMAGE_NAME="TPGK-${VERSION}-${ARCH}.AppImage"
+APPIMAGETOOL_SHA256="b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2"
 
 info "Root progetto: ${ROOT}"
 info "Versione: ${VERSION}  |  Arch: ${ARCH}"
@@ -58,6 +59,11 @@ else
     APPIMAGETOOL="packaging/appimage/appimagetool-${ARCH}.AppImage"
 fi
 ok "appimagetool: ${APPIMAGETOOL}"
+if [[ "${ARCH}" == "x86_64" ]]; then
+    TOOL_PATH="${APPIMAGETOOL}"
+    [[ "${TOOL_PATH}" == "appimagetool" ]] && TOOL_PATH="$(command -v appimagetool)"
+    printf '%s  %s\n' "${APPIMAGETOOL_SHA256}" "${TOOL_PATH}" | sha256sum --check --strict
+fi
 
 step "Creazione AppImage"
 mkdir -p dist

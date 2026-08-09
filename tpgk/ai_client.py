@@ -76,12 +76,21 @@ class AIClient:
     def set_system_prompt(self, prompt: str):
         self._system_prompt = prompt
 
+    def _remove_message(self, target):
+        for index, message in enumerate(self._messages):
+            if message is target:
+                del self._messages[index]
+                return
+
     def chat(self, message: str) -> str:
         self._truncate_messages()
         has_system = any(m.get("role") == "system" for m in self._messages)
+        system_message = None
         if self._system_prompt and not has_system:
-            self._messages.insert(0, {"role": "system", "content": self._system_prompt})
-        self._messages.append({"role": "user", "content": message})
+            system_message = {"role": "system", "content": self._system_prompt}
+            self._messages.insert(0, system_message)
+        user_message = {"role": "user", "content": message}
+        self._messages.append(user_message)
         try:
             if self._protocol == "claude":
                 return self._call_claude()
@@ -90,17 +99,21 @@ class AIClient:
             else:
                 return self._call_openai_compatible()
         except Exception:
-            self._messages.pop()
-            if self._system_prompt and not has_system and self._messages and self._messages[0].get("role") == "system":
-                self._messages.pop(0)
+            self._remove_message(user_message)
+            if system_message is not None:
+                self._remove_message(system_message)
             raise
 
     def chat_stream(self, message: str, cancel_event=None) -> Generator[str, None, None]:
         self._truncate_messages()
         has_system = any(m.get("role") == "system" for m in self._messages)
+        system_message = None
         if self._system_prompt and not has_system:
-            self._messages.insert(0, {"role": "system", "content": self._system_prompt})
-        self._messages.append({"role": "user", "content": message})
+            system_message = {"role": "system", "content": self._system_prompt}
+            self._messages.insert(0, system_message)
+        user_message = {"role": "user", "content": message}
+        self._messages.append(user_message)
+        completed = False
         try:
             if self._protocol == "claude":
                 yield from self._call_claude_stream(cancel_event)
@@ -108,11 +121,17 @@ class AIClient:
                 yield from self._call_gemini_stream(message, cancel_event)
             else:
                 yield from self._call_openai_stream(cancel_event)
+            completed = True
         except Exception:
-            self._messages.pop()
-            if self._system_prompt and not has_system and self._messages and self._messages[0].get("role") == "system":
-                self._messages.pop(0)
+            self._remove_message(user_message)
+            if system_message is not None:
+                self._remove_message(system_message)
             raise
+        finally:
+            if not completed:
+                self._remove_message(user_message)
+                if system_message is not None:
+                    self._remove_message(system_message)
 
     def reset(self):
         self._messages = []
@@ -277,7 +296,11 @@ class AIClient:
         url = url.replace(":streamGenerateContent", ":generateContent")
         headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
         contents = []
+        system_instruction = None
         for m in self._messages:
+            if m["role"] == "system":
+                system_instruction = {"parts": [{"text": m["content"]}]}
+                continue
             contents.append({
                 "role": "user" if m["role"] == "user" else "model",
                 "parts": [{"text": m["content"]}],
@@ -285,6 +308,8 @@ class AIClient:
         payload = {"contents": contents, "generationConfig": {
             "temperature": 0.7, "maxOutputTokens": 8192,
         }}
+        if system_instruction:
+            payload["systemInstruction"] = system_instruction
         resp = requests.post(url, headers=headers, json=payload, timeout=120)
         resp.raise_for_status()
         data = resp.json()
@@ -300,7 +325,11 @@ class AIClient:
         headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
         params = {"alt": "sse"}
         contents = []
+        system_instruction = None
         for m in self._messages:
+            if m["role"] == "system":
+                system_instruction = {"parts": [{"text": m["content"]}]}
+                continue
             contents.append({
                 "role": "user" if m["role"] == "user" else "model",
                 "parts": [{"text": m["content"]}],
@@ -308,6 +337,8 @@ class AIClient:
         payload = {"contents": contents, "generationConfig": {
             "temperature": 0.7, "maxOutputTokens": 8192,
         }}
+        if system_instruction:
+            payload["systemInstruction"] = system_instruction
         resp = self._open_stream(cancel_event, url, headers=headers, params=params, json=payload)
         full = ""
         try:

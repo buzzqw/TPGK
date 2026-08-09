@@ -1,11 +1,14 @@
 import os
 import json
+import copy
+import re
 import tempfile
 import threading
 from tpgk.logging_utils import get_logger
 
 
 logger = get_logger(__name__)
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "tpgk")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "settings.json")
@@ -189,10 +192,10 @@ class Settings:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._data = dict(DEFAULTS)
+            cls._instance._data = copy.deepcopy(DEFAULTS)
             cls._instance._callbacks = []
             cls._instance._batch = False
-            cls._instance._lock = threading.Lock()
+            cls._instance._lock = threading.RLock()
         return cls._instance
 
     def connect(self, callback):
@@ -205,7 +208,7 @@ class Settings:
             pass
 
     def notify_changed(self):
-        for cb in self._callbacks:
+        for cb in list(self._callbacks):
             try:
                 cb()
             except Exception:
@@ -217,23 +220,74 @@ class Settings:
         self.load()
 
     def load(self):
-        if self._loaded:
-            return
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        os.chmod(CONFIG_DIR, 0o700)
-        if os.path.exists(CONFIG_FILE):
-            try:
-                os.chmod(CONFIG_FILE, 0o600)
-                with open(CONFIG_FILE, "r") as f:
-                    data = json.load(f)
-                for key in DEFAULTS:
-                    if key in data:
-                        self._data[key] = data[key]
-            except (json.JSONDecodeError, OSError):
+        with self._lock:
+            if self._loaded:
+                return
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            os.chmod(CONFIG_DIR, 0o700)
+            rewrite = not os.path.exists(CONFIG_FILE)
+            if not rewrite:
+                try:
+                    os.chmod(CONFIG_FILE, 0o600)
+                    with open(CONFIG_FILE, "r") as f:
+                        data = json.load(f)
+                    if not isinstance(data, dict):
+                        raise ValueError("settings root must be an object")
+                    for key, value in data.items():
+                        if key in DEFAULTS:
+                            if self._valid_value(key, value):
+                                self._data[key] = copy.deepcopy(value)
+                            else:
+                                logger.warning("settings_value_invalid key=%s", key)
+                                rewrite = True
+                except (json.JSONDecodeError, OSError, ValueError, TypeError):
+                    logger.exception("settings_load_failed")
+                    rewrite = True
+            self._loaded = True
+            if rewrite:
                 self.save()
-        else:
-            self.save()
-        self._loaded = True
+
+    @staticmethod
+    def _valid_value(key, value):
+        default = DEFAULTS[key]
+        if isinstance(default, bool):
+            return isinstance(value, bool)
+        if isinstance(default, int):
+            if not isinstance(value, int) or isinstance(value, bool):
+                return False
+            limits = {
+                "font_size": (4, 128),
+                "scrollback_lines": (-1, 1_000_000),
+                "terminal_columns": (40, 300),
+                "terminal_rows": (10, 120),
+                "window_padding_horizontal": (0, 100),
+                "window_padding_vertical": (0, 100),
+            }
+            bounds = limits.get(key)
+            return bounds is None or bounds[0] <= value <= bounds[1]
+        if isinstance(default, float):
+            return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and 0.1 <= value <= 1.0)
+        if isinstance(default, str):
+            if not isinstance(value, str) or len(value) > 4096:
+                return False
+            if key in {"foreground_color", "background_color"} and value:
+                return bool(_HEX_COLOR_RE.fullmatch(value))
+            if key in {"cursor_color", "highlight_color", "highlight_bg_color",
+                       "tab_title_color", "tab_active_title_color"}:
+                return bool(_HEX_COLOR_RE.fullmatch(value))
+            return True
+        if key == "custom_palette":
+            return (value is None or
+                    (isinstance(value, dict) and len(value) <= 16 and
+                     all(isinstance(k, str) and isinstance(v, str)
+                         and _HEX_COLOR_RE.fullmatch(v) for k, v in value.items())))
+        if isinstance(default, dict):
+            return (isinstance(value, dict) and len(value) <= 100 and
+                    all(isinstance(k, str) and isinstance(v, str)
+                        and len(k) <= 100 and len(v) <= 4096
+                        for k, v in value.items()))
+        return value is None
 
     def save(self):
         if self._batch:
@@ -257,34 +311,42 @@ class Settings:
     def get(self, key, default=None):
         with self._lock:
             self._ensure_loaded()
-            return self._data.get(key, default)
+            return copy.deepcopy(self._data.get(key, default))
 
     def set(self, key, value):
         with self._lock:
+            if key in DEFAULTS and not self._valid_value(key, value):
+                raise ValueError(f"Invalid setting value: {key}")
             self._data[key] = value
             if not self._batch:
                 self.save()
 
     def set_many(self, updates: dict):
-        for key, value in updates.items():
-            self._data[key] = value
-        if not self._batch:
-            self.save()
+        with self._lock:
+            for key, value in updates.items():
+                if key in DEFAULTS and not self._valid_value(key, value):
+                    raise ValueError(f"Invalid setting value: {key}")
+            for key, value in updates.items():
+                self._data[key] = copy.deepcopy(value)
+            if not self._batch:
+                self.save()
 
     def begin_batch(self):
-        self._batch = True
+        with self._lock:
+            self._batch = True
 
     def end_batch(self):
-        self._batch = False
-        self.save()
+        with self._lock:
+            self._batch = False
+            self.save()
 
     def __getitem__(self, key):
-        return self._data[key]
+        with self._lock:
+            self._ensure_loaded()
+            return copy.deepcopy(self._data[key])
 
     def __setitem__(self, key, value):
-        self._data[key] = value
-        if not self._batch:
-            self.save()
+        self.set(key, value)
 
     def get_color_scheme(self):
         self._ensure_loaded()

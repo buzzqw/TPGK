@@ -4,6 +4,7 @@ import sys
 import shutil
 import signal
 import subprocess
+import threading
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -38,46 +39,12 @@ ENCODINGS = [
     "CP1252", "CP850", "ASCII", "KOI8-R", "Shift_JIS", "EUC-JP", "GBK",
 ]
 
-EUPL_LICENSE_TEXT = """EUROPEAN UNION PUBLIC LICENCE v. 1.2
+EUPL_LICENSE_TEXT = """Licensed under the European Union Public Licence (EUPL) v. 1.2.
 
-This software is licensed under the European Union Public Licence (EUPL) version 1.2.
+Copyright (c) 2026 Andres Zanzani.
 
-The full license text is available at:
+The complete licence text is distributed in the LICENSE file and is available at:
 https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12
-
-Copyright (c) 2026 Andres Zanzani
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-The Software may not be used for military purposes or in any way that violates
-human rights as defined by the Charter of Fundamental Rights of the European Union.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-Compatible licenses under EUPL 1.2 include:
-- GNU General Public License (GPL) v. 2, v. 3
-- GNU Affero General Public License (AGPL) v. 3
-- Eclipse Public License (EPL) v. 1.0, v. 2.0
-- Mozilla Public License (MPL) v. 2.0
-- GNU Lesser General Public License (LGPL) v. 2.1, v. 3.0
-- CeCILL v. 2.0, v. 2.1
 """
 
 
@@ -97,6 +64,7 @@ class _DetachedWindow(Gtk.Window):
         super().__init__(title=f"TPGK - {title}")
         self._settings = Settings()
         self._terminal = terminal
+        self._apply_window_visuals()
         self._apply_window_size()
 
         self._stats_sys_label = Gtk.Label()
@@ -110,6 +78,8 @@ class _DetachedWindow(Gtk.Window):
         self._stats_box.pack_end(self._stats_self_label, False, False, 0)
         self._stats_box.set_no_show_all(True)
         self._stats_source_id = 0
+        self._remote_stats_pending = False
+        self._remote_stats_generation = 0
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add(vbox)
@@ -129,6 +99,7 @@ class _DetachedWindow(Gtk.Window):
         self._apply_stats_visibility()
 
         self._settings.connect(self._apply_window_size)
+        self._settings.connect(self._apply_window_visuals)
 
         self.connect("delete-event", lambda *a: self._on_close())
         self.connect("key-press-event", self._on_window_key)
@@ -144,6 +115,18 @@ class _DetachedWindow(Gtk.Window):
         cw = max(int(font_size * 0.6), 5)
         ch = max(int(font_size * 1.45), 10)
         self.resize(cols * cw + 60, rows * ch + 120)
+
+    def _apply_window_visuals(self):
+        opacity = round(self._settings.get("opacity", 1.0), 2)
+        self.set_opacity(opacity)
+        if self._settings.get("enable_transparency", False):
+            screen = self.get_screen()
+            visual = screen.get_rgba_visual() if screen else None
+            if visual:
+                self.set_app_paintable(True)
+                self.set_visual(visual)
+        else:
+            self.set_app_paintable(False)
 
     def set_title(self, title):
         super().set_title(title)
@@ -396,10 +379,13 @@ class _DetachedWindow(Gtk.Window):
             self._stats_self_label.set_text("")
             return True
         if term.is_ssh_client():
-            stats = term.get_remote_stats()
-            if not stats:
-                stats = ssh_placeholder()
-            self._stats_sys_label.set_text(stats)
+            self._stats_sys_label.set_text(ssh_placeholder())
+            if not self._remote_stats_pending:
+                self._remote_stats_pending = True
+                self._remote_stats_generation += 1
+                generation = self._remote_stats_generation
+                threading.Thread(target=self._fetch_remote_stats,
+                                 args=(term, generation), daemon=True).start()
             self._stats_self_label.set_text(collect_self())
             return True
         if term.is_ssh():
@@ -413,6 +399,22 @@ class _DetachedWindow(Gtk.Window):
         self._stats_sys_label.set_text(stats)
         self._stats_self_label.set_text(collect_self())
         return True
+
+    def _fetch_remote_stats(self, term, generation):
+        try:
+            stats = term.get_remote_stats()
+        except Exception:
+            stats = ""
+        GLib.idle_add(self._finish_remote_stats, term, generation, stats)
+
+    def _finish_remote_stats(self, term, generation, stats):
+        self._remote_stats_pending = False
+        if getattr(self, "_closing", False) or generation != self._remote_stats_generation:
+            return False
+        if self._terminal is term and term.is_ssh_client():
+            from tpgk.system_stats import ssh_placeholder
+            self._stats_sys_label.set_text(stats or ssh_placeholder())
+        return False
 
     def _toggle_fullscreen(self, *a):
         if self.get_window().get_state() & Gdk.WindowState.FULLSCREEN:
@@ -461,7 +463,9 @@ class _DetachedWindow(Gtk.Window):
         dialog.destroy()
 
     def _on_close(self, *a):
+        self._closing = True
         self._settings.disconnect(self._apply_window_size)
+        self._settings.disconnect(self._apply_window_visuals)
         self._terminal.terminate()
         self.destroy()
 
@@ -523,12 +527,7 @@ class MainWindow(Gtk.ApplicationWindow):
         ch = max(int(font_size * 1.45), 10)
         self.set_default_size(cols * cw + 60, rows * ch + 120)
 
-        if self._settings.get("enable_transparency", False):
-            self.set_app_paintable(True)
-            self.set_visual(self.get_screen().get_rgba_visual())
-        opacity = round(self._settings.get("opacity", 1.0), 2)
-        if opacity < 1.0:
-            self.set_opacity(opacity)
+        self._apply_window_visuals()
 
         self._paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         self._paned.set_wide_handle(True)
@@ -575,6 +574,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._stats_box.pack_end(self._stats_self_label, False, False, 0)
         self._stats_box.set_no_show_all(True)
         self._stats_source_id = 0
+        self._remote_stats_pending = False
+        self._remote_stats_generation = 0
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         vbox.pack_start(self._menubar, False, False, 0)
@@ -596,6 +597,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._settings.connect(self._apply_tab_colors)
         self._settings.connect(self._apply_window_size)
+        self._settings.connect(self._apply_window_visuals)
 
         GLib.idle_add(self._fix_paned_position)
         GLib.idle_add(self._initialize_terminal)
@@ -615,6 +617,18 @@ class MainWindow(Gtk.ApplicationWindow):
         w = cols * cw + 60
         h = rows * ch + 120
         self.resize(w, h)
+
+    def _apply_window_visuals(self):
+        opacity = round(self._settings.get("opacity", 1.0), 2)
+        self.set_opacity(opacity)
+        if self._settings.get("enable_transparency", False):
+            screen = self.get_screen()
+            visual = screen.get_rgba_visual() if screen else None
+            if visual:
+                self.set_app_paintable(True)
+                self.set_visual(visual)
+        else:
+            self.set_app_paintable(False)
 
     def set_title(self, title):
         super().set_title(title)
@@ -1168,6 +1182,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self._update_tabs_menu()
 
     def _on_page_removed(self):
+        if getattr(self, "_restoring_session", False):
+            return
         if self._notebook.get_n_pages() == 0 and self._notebook2.get_n_pages() == 0:
             self._on_close()
         elif self._notebook2.get_n_pages() == 0 and self._split_mode != "single":
@@ -1446,10 +1462,13 @@ class MainWindow(Gtk.ApplicationWindow):
             self._stats_self_label.set_text("")
             return True
         if term.is_ssh_client():
-            stats = term.get_remote_stats()
-            if not stats:
-                stats = ssh_placeholder()
-            self._stats_sys_label.set_text(stats)
+            self._stats_sys_label.set_text(ssh_placeholder())
+            if not self._remote_stats_pending:
+                self._remote_stats_pending = True
+                self._remote_stats_generation += 1
+                generation = self._remote_stats_generation
+                threading.Thread(target=self._fetch_remote_stats,
+                                 args=(term, generation), daemon=True).start()
             self._stats_self_label.set_text(collect_self())
             return True
         if term.is_ssh():
@@ -1463,6 +1482,22 @@ class MainWindow(Gtk.ApplicationWindow):
         self._stats_sys_label.set_text(stats)
         self._stats_self_label.set_text(collect_self())
         return True
+
+    def _fetch_remote_stats(self, term, generation):
+        try:
+            stats = term.get_remote_stats()
+        except Exception:
+            stats = ""
+        GLib.idle_add(self._finish_remote_stats, term, generation, stats)
+
+    def _finish_remote_stats(self, term, generation, stats):
+        self._remote_stats_pending = False
+        if getattr(self, "_closing", False) or generation != self._remote_stats_generation:
+            return False
+        if self._current_terminal() is term and term.is_ssh_client():
+            from tpgk.system_stats import ssh_placeholder
+            self._stats_sys_label.set_text(stats or ssh_placeholder())
+        return False
 
     def _toggle_fullscreen(self, *a):
         if self.get_window().get_state() & Gdk.WindowState.FULLSCREEN:
@@ -1664,7 +1699,11 @@ class MainWindow(Gtk.ApplicationWindow):
     def _copy_all_to_notes(self, term):
         text = term._vte.get_text_format(Vte.Format.TEXT)
         if text:
-            path = term._notes.write_note(text)
+            try:
+                path = term._notes.write_note(text)
+            except (OSError, ValueError) as error:
+                term._vte.feed(f"\r\n\x1b[31mCould not write note: {error}\x1b[0m\r\n".encode())
+                return
             term._vte.feed(
                 f"\r\n\x1b[32m+ Added all text to note: {path}\x1b[0m\r\n".encode()
             )
@@ -1718,14 +1757,17 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._closing = False
                 return True
 
+        self._closing = True
+
+        app = self.get_application()
+        if not app or len(app.get_windows()) <= 1:
+            self._save_session()
         for nb in (self._notebook, self._notebook2):
             for i in range(nb.get_n_pages() - 1, -1, -1):
                 nb.get_nth_page(i).terminate()
         self._settings.disconnect(self._apply_tab_colors)
         self._settings.disconnect(self._apply_window_size)
-        app = self.get_application()
-        if not app or len(app.get_windows()) <= 1:
-            self._save_session()
+        self._settings.disconnect(self._apply_window_visuals)
         self.destroy()
         return True
 
@@ -1797,6 +1839,23 @@ class MainWindow(Gtk.ApplicationWindow):
     def _save_session_named(self, name):
         from tpgk.session import save_state
         return save_state(self, name)
+
+    def _prepare_session_restore(self):
+        self._restoring_session = True
+        try:
+            for nb in (self._notebook, self._notebook2):
+                for i in range(nb.get_n_pages() - 1, -1, -1):
+                    page = nb.get_nth_page(i)
+                    page.terminate()
+                    nb.remove_page(i)
+            self._tab_labels.clear()
+            self._tab_base_titles.clear()
+            self._current_pages.clear()
+            self._split_mode = "single"
+            self._notebook2.hide()
+            self._notebook.set_show_tabs(self._settings.get("show_tabs", True))
+        finally:
+            self._restoring_session = False
 
     def _load_session_named(self, name):
         from tpgk.session import load_state, restore_window

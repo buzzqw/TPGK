@@ -35,6 +35,7 @@ class _Window:
         self._split_mode = "single"
         self._tab_base_titles = {page: page.base_title for page in pages}
         self.added = []
+        self.prepared = False
 
     def _get_tab_text(self, page):
         return page.title
@@ -45,6 +46,9 @@ class _Window:
     def _set_split(self, mode, create_tab=True):
         self._split_mode = mode
         self.split_create_tab = create_tab
+
+    def _prepare_session_restore(self):
+        self.prepared = True
 
 
 @pytest.fixture
@@ -81,6 +85,7 @@ def test_session_restore_preserves_titles_without_placeholder_tab(isolated_persi
     target = _Window()
     restore_window(target, load_state("work"))
 
+    assert target.prepared
     assert target._split_mode == "vertical"
     assert target.split_create_tab is False
     assert [tab["display_title"] for tab in target.added] == [
