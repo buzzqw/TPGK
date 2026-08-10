@@ -14,7 +14,8 @@ permissions:
   contents: write
 
 env:
-  APPIMAGETOOL_SHA256: b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2
+  APPIMAGETOOL_VERSION: 1.9.1
+  APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
 
 jobs:
   appimage:
@@ -36,7 +37,7 @@ jobs:
           printf 'value=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ steps.tag.outputs.value }}
 
@@ -76,7 +77,7 @@ jobs:
       - name: Download appimagetool
         run: |
           wget -q \
-            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage" \
             -O appimagetool
           chmod +x appimagetool
           printf '%s  appimagetool\n' "$APPIMAGETOOL_SHA256" | sha256sum --check --strict

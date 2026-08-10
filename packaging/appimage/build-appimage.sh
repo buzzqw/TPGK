@@ -17,7 +17,9 @@ VERSION="${1:-$(git describe --tags --always 2>/dev/null || echo 'dev')}"
 VERSION="${VERSION#v}"
 ARCH="$(uname -m)"
 APPIMAGE_NAME="TPGK-${VERSION}-${ARCH}.AppImage"
-APPIMAGETOOL_SHA256="b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2"
+APPIMAGETOOL_VERSION="1.9.1"
+APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${ARCH}.AppImage"
 
 info "Root progetto: ${ROOT}"
 info "Versione: ${VERSION}  |  Arch: ${ARCH}"
@@ -53,7 +55,7 @@ elif [[ -f "packaging/appimage/appimagetool-${ARCH}.AppImage" ]]; then
     APPIMAGETOOL="packaging/appimage/appimagetool-${ARCH}.AppImage"
 else
     warn "Scaricamento appimagetool..."
-    wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${ARCH}.AppImage" \
+    wget -q "${APPIMAGETOOL_URL}" \
         -O "packaging/appimage/appimagetool-${ARCH}.AppImage"
     chmod +x "packaging/appimage/appimagetool-${ARCH}.AppImage"
     APPIMAGETOOL="packaging/appimage/appimagetool-${ARCH}.AppImage"
@@ -62,7 +64,17 @@ ok "appimagetool: ${APPIMAGETOOL}"
 if [[ "${ARCH}" == "x86_64" ]]; then
     TOOL_PATH="${APPIMAGETOOL}"
     [[ "${TOOL_PATH}" == "appimagetool" ]] && TOOL_PATH="$(command -v appimagetool)"
-    printf '%s  %s\n' "${APPIMAGETOOL_SHA256}" "${TOOL_PATH}" | sha256sum --check --strict
+    [[ "${TOOL_PATH}" != /* ]] && TOOL_PATH="${ROOT}/${TOOL_PATH}"
+    if ! printf '%s  %s\n' "${APPIMAGETOOL_SHA256}" "${TOOL_PATH}" | sha256sum --check --strict; then
+        if [[ "${TOOL_PATH}" == "${ROOT}/packaging/appimage/appimagetool-${ARCH}.AppImage" ]]; then
+            warn "appimagetool locale non corrisponde alla release ${APPIMAGETOOL_VERSION}; lo riscarico."
+            wget -q "${APPIMAGETOOL_URL}" -O "${TOOL_PATH}"
+            chmod +x "${TOOL_PATH}"
+            printf '%s  %s\n' "${APPIMAGETOOL_SHA256}" "${TOOL_PATH}" | sha256sum --check --strict
+        else
+            err "appimagetool non corrisponde alla release verificata ${APPIMAGETOOL_VERSION}."
+        fi
+    fi
 fi
 
 step "Creazione AppImage"
