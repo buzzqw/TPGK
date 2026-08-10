@@ -30,6 +30,14 @@ source .venv/bin/activate
 python -m tpgk
 ```
 
+Ogni esecuzione da riga di comando avvia un'istanza indipendente, anche se TPGK
+e' gia' aperto. Per esempio:
+
+```bash
+python -m tpgk --new-window
+python -m tpgk --execute git status
+```
+
 ---
 
 ## 2. Interfaccia

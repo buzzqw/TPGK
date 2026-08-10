@@ -118,13 +118,13 @@ source .venv/bin/activate && python -m tpgk
 ### Command Line
 ```bash
 tpgk /path/to/project                 # Open a terminal in a directory
-tpgk --new-window                     # Ask the running instance for a new window
+tpgk --new-window                     # Open another independent window
 tpgk --no-restore                     # Start without restoring the last session
 tpgk --execute git status             # Run a command in a new terminal window
 ```
 
-TPGK uses one application instance. A second invocation raises the existing
-window unless a directory, `--new-window`, or `--execute` is supplied.
+Each command-line invocation starts an independent TPGK process and window.
+This also means a new launch is not intercepted by an already running instance.
 
 ---
 
@@ -254,6 +254,19 @@ tpgk/
 ├── manual_en.md             # Full English user manual
 └── manual_it.md             # Full Italian user manual
 ```
+
+---
+
+## Support the Project
+
+TPGK is free and open-source software built in spare time. If it is useful to
+you, consider supporting its development with a coffee.
+
+<div align="center">
+
+[![Donate with PayPal](https://img.shields.io/badge/Donate-PayPal-00457C?style=for-the-badge&logo=paypal)](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=azanzani@gmail.com&item_name=Support+TPGK+Project)
+
+</div>
 
 ---
 

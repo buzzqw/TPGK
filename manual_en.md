@@ -30,6 +30,14 @@ source .venv/bin/activate
 python -m tpgk
 ```
 
+Each command-line launch starts an independent TPGK instance, even when TPGK is
+already running. For example:
+
+```bash
+python -m tpgk --new-window
+python -m tpgk --execute git status
+```
+
 ---
 
 ## 2. Interface
