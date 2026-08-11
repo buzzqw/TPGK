@@ -74,6 +74,19 @@ class TerminalBox(Gtk.Box):
         self._vte.set_scroll_on_keystroke(self._settings.get("scroll_on_keystroke", True))
         self._scroll_follow = True
 
+        # Best-effort mitigation for a longstanding upstream VTE bug: a resize that lands
+        # while a full-screen program (top, htop...) is mid-redraw can leave stale/blank
+        # rows behind that the program never repaints, because it only touches cells it
+        # believes changed (GNOME/vte#2374, #135, #181). VTE forces rewrap-on-resize since
+        # 0.60 with no way to disable it, so there's no config-level fix. Instead, once a
+        # resize settles we nudge the pty size down and immediately back up, which sends
+        # two real SIGWINCHes to the foreground process and makes well-behaved curses apps
+        # do a full clear-and-redraw, papering over any leftover corruption.
+        self._resize_settle_source = 0
+        self._resize_nudge_pending = False
+        self._skip_next_resize_nudge = True
+        self._vte.connect("size-allocate", self._on_vte_size_allocate)
+
         self._apply_font()
         self._apply_colors()
 
@@ -414,6 +427,45 @@ class TerminalBox(Gtk.Box):
         cols = self._settings.get("terminal_columns", 80)
         rows = self._settings.get("terminal_rows", 24)
         self._vte.set_size(cols, rows)
+
+    def _on_vte_size_allocate(self, widget, allocation):
+        if self._resize_nudge_pending:
+            # Ignore the allocation churn caused by our own nudge below.
+            return
+        if self._resize_settle_source:
+            GLib.source_remove(self._resize_settle_source)
+        self._resize_settle_source = GLib.timeout_add(300, self._settle_resize_nudge)
+
+    def _settle_resize_nudge(self):
+        self._resize_settle_source = 0
+        if self._skip_next_resize_nudge:
+            # Skip the very first allocation (initial layout at startup) so we don't
+            # flicker the terminal before the user has done anything.
+            self._skip_next_resize_nudge = False
+            return False
+        if self._pid <= 0 or self._resize_nudge_pending:
+            return False
+        cols = self._vte.get_column_count()
+        rows = self._vte.get_row_count()
+        if cols < 2 or rows < 2:
+            return False
+        self._resize_nudge_pending = True
+        self._vte.set_size(cols, rows - 1)
+
+        def _clear_pending():
+            self._resize_nudge_pending = False
+            return False
+
+        def _restore():
+            self._vte.set_size(cols, rows)
+            # Defer clearing the guard to idle priority so the size-allocate this
+            # set_size() call triggers is dispatched (and ignored) first; GTK's own
+            # resize processing runs at a higher priority than a plain idle callback.
+            GLib.idle_add(_clear_pending)
+            return False
+
+        GLib.timeout_add(60, _restore)
+        return False
 
     def apply_settings(self):
         self._apply_font()
