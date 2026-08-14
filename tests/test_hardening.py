@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 import pytest
 
@@ -69,6 +70,31 @@ def test_tpgk_command_matching_respects_word_boundaries():
     assert TerminalBox._is_tpgk_command(object(), "/history ssh")
     assert not TerminalBox._is_tpgk_command(object(), "/history_backup")
     assert not TerminalBox._is_tpgk_command(object(), "/clearance")
+
+
+def test_shell_integration_reattaches_after_cwd_is_recreated(monkeypatch, tmp_path):
+    import tpgk.terminal as terminal_module
+    from tpgk.terminal import TerminalBox
+
+    monkeypatch.setattr(terminal_module.os.path, "expanduser", lambda path: str(tmp_path))
+    TerminalBox._write_osc133_script(object())
+
+    workspace = tmp_path / "workspace"
+    current = workspace / "current"
+    current.mkdir(parents=True)
+    script = tmp_path / ".config" / "tpgk" / "osc133.sh"
+    command = (
+        'source "$1"; cd "$2/current"; rmdir "$2/current"; mkdir "$2/current"; '
+        'touch "$2/current/updated"; ls -A'
+    )
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-c", command, "bash", str(script), str(workspace)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.endswith("updated\n")
 
 
 def test_ai_context_is_bounded_and_redacted():

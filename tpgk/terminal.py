@@ -585,7 +585,16 @@ __tpgk_osc133_stats() {
     printf 'S%s|%s|%s|%s|%s\n' "$load" "$mem_used" "$mem_total" "$disk_used" "$disk_total" >&3 2>/dev/null
 }
 
+__tpgk_reattach_replaced_cwd() {
+    # A process can remove and recreate the current directory. The shell then
+    # keeps the removed directory's inode even though $PWD names the replacement.
+    if [ -n "$PWD" ] && [ -d "$PWD" ] && [ ! . -ef "$PWD" ]; then
+        builtin cd -- "$PWD"
+    fi
+}
+
 __tpgk_osc133_preexec() {
+    __tpgk_reattach_replaced_cwd
     [ "$__TPGK_OSC133_READY" = "1" ] || return
     case "$BASH_COMMAND" in
         __tpgk_osc133_*) return ;;
@@ -596,6 +605,7 @@ __tpgk_osc133_preexec() {
 }
 __tpgk_osc133_precmd() {
     local _exit=$?
+    __tpgk_reattach_replaced_cwd
     __TPGK_OSC133_READY=1
     printf '\033]133;D;%s\007' "$_exit"
     __tpgk_osc133_notify "D$_exit"
@@ -637,11 +647,13 @@ if [ -n "$BASH_VERSION" ]; then
 elif [ -n "$ZSH_VERSION" ]; then
     autoload -Uz add-zsh-hook
     __tpgk_zsh_preexec() {
+        __tpgk_reattach_replaced_cwd
         printf '\033]133;C\007'
         __tpgk_osc133_notify "C${1//$'\n'/ }"
     }
     __tpgk_zsh_precmd() {
         local _exit=$?
+        __tpgk_reattach_replaced_cwd
         printf '\033]133;D;%s\007' "$_exit"
         __tpgk_osc133_notify "D$_exit"
         printf '\033]133;A\007'
